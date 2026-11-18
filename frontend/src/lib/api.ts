@@ -1,4 +1,14 @@
-import type { Dashboard, ImageItem, Meta, Project, User, ViewType } from "./types";
+import type {
+  Dashboard,
+  DocumentMetadata,
+  ImageItem,
+  Meta,
+  Project,
+  ProjectDocument,
+  ProjectViews,
+  User,
+  ViewType,
+} from "./types";
 
 /** Same-origin by default: Vercel routes /api/* to the FastAPI service; `next dev` proxies it locally. */
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
@@ -92,6 +102,42 @@ export const api = {
   setView: (id: number, view: ViewType) =>
     json<ImageItem>(`/images/${id}`, { method: "PATCH", ...body({ view_type: view }) }),
   deleteImage: (id: number) => json<void>(`/images/${id}`, { method: "DELETE" }),
+
+  // 7-view slot APIs
+  getProjectViews: (projectId: number) => json<ProjectViews>(`/projects/${projectId}/views`),
+  uploadView: (projectId: number, view: ViewType, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return json<ImageItem>(`/projects/${projectId}/views/${view}`, { method: "POST", body: form });
+  },
+  deleteView: (projectId: number, view: ViewType) =>
+    json<void>(`/projects/${projectId}/views/${view}`, { method: "DELETE" }),
+
+  // Review & Approval APIs
+  reviewImage: (imageId: number, action: "approve" | "reject", notes?: string) =>
+    json<ImageItem>(`/images/${imageId}/review`, { method: "POST", ...body({ action, notes }) }),
+
+  // Document metadata & generation APIs
+  getDocumentMetadata: (projectId: number) =>
+    json<DocumentMetadata>(`/projects/${projectId}/document-metadata`),
+  updateDocumentMetadata: (projectId: number, data: Partial<DocumentMetadata>) =>
+    json<DocumentMetadata>(`/projects/${projectId}/document-metadata`, { method: "PUT", ...body(data) }),
+  uploadSignature: (projectId: number, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return json<DocumentMetadata>(`/projects/${projectId}/document-metadata/signature`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  deleteSignature: (projectId: number) =>
+    json<void>(`/projects/${projectId}/document-metadata/signature`, { method: "DELETE" }),
+  generateDocument: (projectId: number) =>
+    json<{ project_id: number; document: ProjectDocument }>(`/projects/${projectId}/documents`, {
+      method: "POST",
+    }),
+  listDocuments: (projectId: number) =>
+    json<ProjectDocument[]>(`/projects/${projectId}/documents`),
 
   processImage: (id: number) =>
     json<{ image_id: number; status: ImageItem["processing_status"] }>(`/ai/process/${id}`, { method: "POST" }),

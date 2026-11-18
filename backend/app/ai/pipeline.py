@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.ai.background import BackgroundRemover, ClassicalBackgroundRemover, cutout_rgba
+from app.ai.branding import clean_branding_and_text, detect_branding_regions
 from app.ai.contour import extract_contours
 from app.ai.errors import PipelineError
 from app.ai.imaging import encode_png, load_image, scale_box
@@ -24,6 +25,7 @@ STAGES = (
     "segmentation",
     "mask_validation",
     "contour_extraction",
+    "branding_cleanup",
     "rendering",
     "output_validation",
 )
@@ -77,6 +79,10 @@ def run_pipeline(
     stage("contour_extraction")
     contours = extract_contours(mask, keep_openings=settings.keep_openings)
 
+    stage("branding_cleanup")
+    branding_regions = detect_branding_regions(bgr, mask)
+    contours, branding_warnings = clean_branding_and_text(contours, branding_regions, (h, w))
+
     stage("rendering")
     drawing = render_drawing(
         contours, long_side=settings.drawing_long_side, line_width=settings.drawing_line_width
@@ -84,6 +90,27 @@ def run_pipeline(
 
     stage("output_validation")
     drawing_report = validate_drawing(drawing)
+
+    # Drawing Quality Validation: Never mark contaminated or incomplete drawings as Completed
+    quality_warnings: list[str] = list(branding_warnings)
+    chosen_report = next((r for r in reports if r.name == chosen), None)
+    if chosen_report:
+        if chosen_report.contamination > 0.08:
+            quality_warnings.append(
+                f"Elevated background contamination detected ({chosen_report.contamination * 100:.1f}%)."
+            )
+        if chosen_report.border_contact > 0.05:
+            quality_warnings.append(
+                f"Product boundary touches image border ({chosen_report.border_contact * 100:.1f}%)."
+            )
+    if chosen == "foreground-mask" and len(reports) > 1:
+        quality_warnings.append("Primary segmentation failed; conservative foreground mask used.")
+    if len(contours.outer) > 1:
+        quality_warnings.append(
+            f"Multiple outer components detected ({len(contours.outer)}). User review required."
+        )
+
+    quality_status = "review_required" if quality_warnings else "passed"
 
     metrics = {
         "original_size": list(loaded.original_size),
@@ -100,6 +127,9 @@ def run_pipeline(
         "openings": len(contours.holes),
         "contour_points": contours.point_count,
         "drawing": drawing_report,
+        "branding_regions": [r.as_dict() for r in branding_regions],
+        "quality_status": quality_status,
+        "quality_warnings": quality_warnings,
     }
     return PipelineOutput(
         background_removed=encode_png(cutout_rgba(bgr, foreground)),

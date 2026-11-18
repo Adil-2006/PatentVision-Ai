@@ -26,6 +26,7 @@ export const STATUS_STYLES: Record<ImageStatus, string> = {
   Uploaded: "bg-slate-100 text-slate-700 ring-slate-300",
   Queued: "bg-amber-50 text-amber-800 ring-amber-300",
   Processing: "bg-blue-50 text-blue-800 ring-blue-300",
+  "Review required": "bg-amber-100 text-amber-900 ring-amber-400 font-medium",
   Completed: "bg-emerald-50 text-emerald-800 ring-emerald-300",
   Failed: "bg-red-50 text-red-800 ring-red-300",
 };
@@ -37,6 +38,8 @@ export function processActionLabel(status: ImageStatus): string | null {
       return "Generate drawing";
     case "Failed":
       return "Retry";
+    case "Review required":
+      return "Review / Reprocess";
     case "Completed":
       return "Reprocess";
     default:

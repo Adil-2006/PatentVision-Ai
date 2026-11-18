@@ -103,6 +103,21 @@ function ImageView({ id }: { id: number }) {
     }
   }
 
+  async function handleReview(action: "approve" | "reject") {
+    try {
+      const updated = await api.reviewImage(id, action);
+      setImage(updated);
+      toast(
+        action === "approve" ? "success" : "info",
+        action === "approve"
+          ? "Drawing approved for patent filing."
+          : "Drawing marked as rejected.",
+      );
+    } catch (err) {
+      setError(err);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
@@ -128,8 +143,34 @@ function ImageView({ id }: { id: number }) {
               {image.width}×{image.height} · {formatBytes(image.size_bytes)}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
+            {image.approval_status === "approved" && (
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-300">
+                ✓ Approved
+              </span>
+            )}
+            {image.approval_status === "rejected" && (
+              <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-semibold text-rose-800 ring-1 ring-rose-300">
+                Rejected
+              </span>
+            )}
+            {result?.urls.drawing && image.approval_status !== "approved" && (
+              <button
+                onClick={() => handleReview("approve")}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
+              >
+                Approve Drawing
+              </button>
+            )}
+            {result?.urls.drawing && image.approval_status !== "rejected" && (
+              <button
+                onClick={() => handleReview("reject")}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Reject
+              </button>
+            )}
             {action && (
               <button onClick={start} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">
                 {action}
@@ -138,6 +179,25 @@ function ImageView({ id }: { id: number }) {
           </div>
         </div>
       </div>
+
+      {result?.quality_warnings && result.quality_warnings.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm">
+          <h3 className="font-semibold text-amber-950 flex items-center gap-2">
+            <svg className="h-4 w-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            Quality & Contamination Notice (Review Required)
+          </h3>
+          <ul className="mt-2 list-disc list-inside space-y-1 text-xs">
+            {result.quality_warnings.map((w, idx) => (
+              <li key={idx}>{w}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-amber-800">
+            Carefully verify the isolated product geometry and surface details before approving this view for official document generation.
+          </p>
+        </div>
+      )}
 
       <section className="rounded-2xl border border-slate-200 bg-white px-4 py-5 shadow-sm">
         <PipelineStepper status={status} failedStage={working ? null : (result?.failed_stage ?? null)} />

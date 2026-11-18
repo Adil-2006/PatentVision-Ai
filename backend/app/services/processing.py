@@ -8,6 +8,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -65,6 +66,8 @@ def _clear_outputs(result: AIResult, image: Image) -> None:
     for _, attr, _, _ in _OUTPUTS:
         setattr(result, attr, None)
     result.metrics = None
+    result.quality_status = "passed"
+    result.quality_warnings = None
 
 
 def expire_stale(db: Session, images: list[Image]) -> None:
@@ -109,11 +112,15 @@ def queue_image(db: Session, image: Image) -> ProcessingJob:
     job.started_at = job.completed_at = None
     job.error_message = job.failed_stage = None
 
+    image.approval_status = "pending"
+
     result = image.result
     if result is None:
         result = AIResult(image_id=image.id)
         db.add(result)
     result.status = "Queued"
+    result.quality_status = "passed"
+    result.quality_warnings = None
     result.error_message = result.failed_stage = None
     result.updated_at = utcnow()
     db.commit()
@@ -133,6 +140,16 @@ def run_job(image_id: int) -> None:
             _mark_failed(db, image_id, "persistence", "Saving the result failed. Retry processing.")
         finally:
             db.close()
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if hasattr(obj, "item") and callable(obj.item):
+        return obj.item()
+    return obj
 
 
 def _execute(db: Session, image_id: int) -> None:
@@ -169,10 +186,18 @@ def _execute(db: Session, image_id: int) -> None:
         current["stage"] = "persistence"
         for attr, key in files.items():
             setattr(result, attr, key)
-        result.metrics = out.metrics
+        result.metrics = _sanitize_for_json(out.metrics)
+        result.quality_status = out.metrics.get("quality_status", "passed")
+        result.quality_warnings = out.metrics.get("quality_warnings") or []
         result.error_message = result.failed_stage = None
         job.error_message = job.failed_stage = None
-        image.processing_status = job.job_status = result.status = "Completed"
+
+        if result.quality_status == "review_required":
+            image.processing_status = result.status = "Review required"
+            job.job_status = "Completed"
+        else:
+            image.processing_status = job.job_status = result.status = "Completed"
+
         job.completed_at = utcnow()
         db.commit()
     except PipelineError as exc:

@@ -1,7 +1,29 @@
-export const VIEW_TYPES = ["Front", "Rear", "Left", "Right", "Top", "Bottom", "Other"] as const;
-export type ViewType = (typeof VIEW_TYPES)[number];
+export const REQUIRED_VIEW_TYPES = [
+  "Perspective",
+  "Front",
+  "Rear",
+  "Right",
+  "Left",
+  "Top",
+  "Bottom",
+] as const;
 
-export type ImageStatus = "Uploaded" | "Queued" | "Processing" | "Completed" | "Failed";
+export const VIEW_TYPES = [
+  "Perspective",
+  "Front",
+  "Rear",
+  "Left",
+  "Right",
+  "Top",
+  "Bottom",
+  "Other",
+] as const;
+export type ViewType = (typeof VIEW_TYPES)[number];
+export type RequiredViewType = (typeof REQUIRED_VIEW_TYPES)[number];
+
+export type ImageStatus = "Uploaded" | "Queued" | "Processing" | "Review required" | "Completed" | "Failed";
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+export type QualityStatus = "passed" | "review_required" | "failed";
 
 export interface User {
   id: number;
@@ -39,6 +61,8 @@ export interface AiResult {
   id: number;
   image_id: number;
   status: ImageStatus;
+  quality_status?: QualityStatus;
+  quality_warnings?: string[] | null;
   error_message: string | null;
   failed_stage: string | null;
   metrics: Record<string, unknown> | null;
@@ -64,10 +88,51 @@ export interface ImageItem {
   height: number;
   view_type: ViewType;
   processing_status: ImageStatus;
+  approval_status: ApprovalStatus;
+  is_active: boolean;
   created_at: string;
   original_url: string;
   result: AiResult | null;
   job: Job | null;
+}
+
+export interface DocumentMetadata {
+  id: number;
+  project_id: number;
+  applicant_name: string;
+  product_title: string;
+  application_number: string | null;
+  filing_date: string;
+  novelty_statement: string;
+  disclaimer: string;
+  agent_name: string | null;
+  agent_registration_number: string | null;
+  agent_designation: string | null;
+  has_signature: boolean;
+  signature_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDocument {
+  id: number;
+  project_id: number;
+  version: number;
+  filename: string;
+  page_count: number;
+  created_at: string;
+  download_url: string;
+}
+
+export interface ProjectViews {
+  project_id: number;
+  views: Record<string, ImageItem | null>;
+  other_images: ImageItem[];
+  is_ready_to_process: boolean;
+  is_ready_for_document: boolean;
+  missing_views: string[];
+  unapproved_views: string[];
+  view_order: string[];
 }
 
 export interface Dashboard {

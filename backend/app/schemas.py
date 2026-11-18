@@ -3,8 +3,10 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 
-ViewType = Literal["Front", "Rear", "Left", "Right", "Top", "Bottom", "Other"]
-ImageStatus = Literal["Uploaded", "Queued", "Processing", "Completed", "Failed"]
+ViewType = Literal["Perspective", "Front", "Rear", "Left", "Right", "Top", "Bottom", "Other"]
+ImageStatus = Literal["Uploaded", "Queued", "Processing", "Review required", "Completed", "Failed"]
+ApprovalStatus = Literal["pending", "approved", "rejected"]
+QualityStatus = Literal["passed", "review_required", "failed"]
 
 
 def _as_utc(v: datetime) -> datetime:
@@ -106,6 +108,8 @@ class ResultOut(BaseModel):
     id: int
     image_id: int
     status: ImageStatus
+    quality_status: QualityStatus = "passed"
+    quality_warnings: list[str] | None = None
     error_message: str | None
     failed_stage: str | None
     metrics: dict | None
@@ -136,6 +140,8 @@ class ImageOut(BaseModel):
     height: int
     view_type: ViewType
     processing_status: ImageStatus
+    approval_status: ApprovalStatus = "pending"
+    is_active: bool = True
     created_at: UtcDatetime
     original_url: str
     result: ResultOut | None = None
@@ -144,6 +150,70 @@ class ImageOut(BaseModel):
 
 class ImageUpdate(BaseModel):
     view_type: ViewType
+
+
+class ReviewActionIn(BaseModel):
+    action: Literal["approve", "reject"]
+    notes: str | None = None
+
+
+# ---- views and project summary ----
+class ProjectViewsOut(BaseModel):
+    project_id: int
+    views: dict[str, ImageOut | None]
+    other_images: list[ImageOut]
+    is_ready_to_process: bool
+    is_ready_for_document: bool
+    missing_views: list[str]
+    unapproved_views: list[str]
+    view_order: list[str]
+
+
+# ---- document metadata & generated documents ----
+class DocumentMetadataIn(BaseModel):
+    applicant_name: str = Field(default="", max_length=255)
+    product_title: str = Field(default="", max_length=255)
+    application_number: str | None = Field(default=None, max_length=100)
+    filing_date: str = Field(default="", max_length=50)
+    novelty_statement: str = Field(default="", max_length=2000)
+    disclaimer: str = Field(default="", max_length=4000)
+    agent_name: str | None = Field(default=None, max_length=255)
+    agent_registration_number: str | None = Field(default=None, max_length=100)
+    agent_designation: str | None = Field(default="Agent for the Applicant", max_length=100)
+
+
+class DocumentMetadataOut(ORM):
+    id: int
+    project_id: int
+    applicant_name: str
+    product_title: str
+    application_number: str | None
+    filing_date: str
+    novelty_statement: str
+    disclaimer: str
+    agent_name: str | None
+    agent_registration_number: str | None
+    agent_designation: str | None
+    has_signature: bool = False
+    signature_url: str | None = None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+
+
+class ProjectDocumentOut(ORM):
+    id: int
+    project_id: int
+    version: int
+    filename: str
+    page_count: int = 7
+    created_at: UtcDatetime
+    download_url: str
+
+
+class DocumentGenerationAccepted(BaseModel):
+    project_id: int
+    document: ProjectDocumentOut
+
 
 
 class ProcessAccepted(BaseModel):

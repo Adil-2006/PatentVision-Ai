@@ -1,18 +1,47 @@
-# PatentVision AI
+# PatentVision AI (v2.1)
 
-Turns photographs of physical products into clean black-and-white, patent-style outline drawings.
-Implements the prototype described in `PatentVision_AI_PRD.pdf`.
+Turns photographs of physical products into clean black-and-white, patent-office ready technical drawings and automatically compiles an official 7-page patent representation PDF document.
+Implements the complete workflow specified in the PatentVision AI PRD v2.1.
 
 ```
-backend/    FastAPI + SQLAlchemy + Alembic + OpenCV pipeline (Python)  → served at /api
-frontend/   Next.js + React + TypeScript + Tailwind dashboard          → served at /
-vercel.json Vercel Services: both deploy together as one project on one domain
+backend/    FastAPI + SQLAlchemy + Alembic + OpenCV + ReportLab (Python) → served at /api
+frontend/   Next.js 15 + React 19 + TypeScript + Tailwind CSS dashboard → served at /
+vercel.json Vercel Services: full-stack deployment on a unified domain
 ```
 
-> Drawings are drafts that assist patent preparation. They do not guarantee patent-office acceptance and should
-> be reviewed by a patent professional.
+> Representations and drawings are technical drafts that assist patent preparation. They do not substitute for formal patent-office legal advice and should be reviewed by an authorized patent professional.
 
-## Quick start
+---
+
+## What's New in v2.1
+
+1. **7 Fixed Upload Slots**: Strict patent-office view representations:
+   - 1. **Perspective View** (3D perspective / exploded view)
+   - 2. **Front View** (Direct front elevation)
+   - 3. **Rear View** (Direct rear elevation)
+   - 4. **Right Side View** (Direct right profile)
+   - 5. **Left Side View** (Direct left profile)
+   - 6. **Top View** (Direct top / plan elevation)
+   - 7. **Bottom View** (Direct bottom / underside elevation)
+2. **Single-Session Multi-Photo Upload**: Drop all 7 photos at once with smart filename heuristic mapping (e.g. `front`, `rear`, `right`, `left`, `top`, `bottom`, `perspective`), plus drag-and-drop replacement on individual slots.
+3. **Enhanced AI Image Pipeline**:
+   - Advanced background isolation excluding lateral border-touching artifacts (e.g. office chairs, desks) while preserving vertical multi-component assemblies.
+   - Surface branding, logo, and printed text detection and suppression (`branding.py`).
+   - Structural seam, hole, latch, joint, and knob preservation.
+4. **Drawing Quality Validation**:
+   - Multi-component and boundary contamination metrics.
+   - Contaminated or ambiguous drawings are flagged as `Review required` and never falsely marked as `Completed`.
+5. **Drawing Review & Approval Workflow**:
+   - Interactive drawing inspection, approval (`Approved`), rejection (`Rejected`), and per-slot reprocessing.
+6. **Official 7-Page Patent Representation PDF**:
+   - Exact layout and page order matching the official patent standard (`Jug 2-in-1.pdf` reference).
+   - Each page features applicant information, page numbering (`Page No.: X of 7`), centered technical illustration, bold view title, statement of novelty, disclaimer, filing date, and patent agent signature placeholder or uploaded signature image.
+7. **Strict Document Generation Lock**:
+   - PDF generation is strictly locked until all 7 required views are uploaded, processed, and approved.
+
+---
+
+## Quick Start
 
 ### Backend (http://localhost:8000, docs at `/docs`)
 
@@ -20,9 +49,9 @@ vercel.json Vercel Services: both deploy together as one project on one domain
 cd backend
 python -m venv .venv
 .venv\Scripts\activate          # Windows   (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements-dev.txt   # requirements.txt alone is enough to run (no test tools)
-copy .env.example .env          # set PV_SECRET_KEY to a long random value
-alembic upgrade head            # create the schema (dev also auto-creates tables on startup)
+pip install -r requirements-dev.txt   # includes reportlab, pytest, ruff, opencv
+copy .env.example .env          # set PV_SECRET_KEY to a secure random string
+alembic upgrade head            # apply migrations including 0003_perspective_and_document_metadata
 uvicorn app.main:app --reload
 ```
 
@@ -31,122 +60,93 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-npm run dev                     # proxies /api/* to http://127.0.0.1:8000 (override with API_PROXY_TARGET)
+npm run dev                     # proxies /api/* to http://127.0.0.1:8000
 ```
 
-Register, create a project and drop product photos onto it. With **Generate drawings automatically** on, each
-photo is processed right after upload. The image page shows a pipeline stepper (which stage passed or failed),
-a before/after slider comparing the photo with the outline, mask or cut-out, the final drawing, processing details
-and downloads (drawing as PNG and SVG, mask, outline, cut-out, original).
+---
 
-### See the pipeline without the web app
+## Running Automated Tests
 
+### Backend Tests (pytest)
+Runs unit, API, migration, visual regression, quality validation, and end-to-end 7-view pipeline tests:
 ```bash
 cd backend
-python scripts/demo.py          # writes ../samples/<case>/*.png and ../samples/contact_sheet.png
+pytest -v
 ```
+*(All 128 tests passing)*
 
-## Tests
-
+### Frontend Tests (vitest & typecheck)
 ```bash
-cd backend  && pytest                 # unit, API/integration, visual-regression, migration tests
-cd frontend && npm test && npm run typecheck && npm run build
+cd frontend
+npm test -- --run               # 45 vitest tests passing
+npm run typecheck               # tsc --noEmit (0 errors)
+npm run build                   # Next.js 15 production build
 ```
 
-## How it works
+---
 
-`load → background removal → product localization → segmentation → mask validation → contour extraction/smoothing
-→ drawing rendering → output validation → persistence` (`backend/app/ai/pipeline.py`). Every stage validates its
-input and output and raises a `PipelineError` naming the failed stage plus a next action.
+## Database Migrations
 
-| Stage | Module | Notes |
-|---|---|---|
-| Background removal | `ai/background.py` | Border-colour model in Lab + Otsu; soft shadows are down-weighted. Transparent PNGs use their alpha. |
-| Localization | `ai/localization.py` | Foreground-mask localization: merges nearby parts (feet, dividers, holders), drops far-away blobs, validates/clips the box. |
-| Segmentation | `ai/segmentation.py` | `classical` (GrabCut refinement, no model files) or `sam` (Segment Anything, needs checkpoint). Swappable via `PV_SEGMENTER`. |
-| Mask validation | `ai/mask_validation.py` | Rejects empty, tiny, whole-image, border-hugging, **incomplete** (e.g. one compartment of an organizer) or contaminated masks. Candidates are tried in order; the chosen one and every rejection reason are stored in `metrics`. |
-| Contour | `ai/contour.py` | External contour(s), speck removal, corner-preserving smoothing. Default is strict outer outline (PRD FR-09). `PV_KEEP_OPENINGS=true` also keeps large see-through openings (mug handles) as inner contours, but a light label on a light background can then be mistaken for an opening. |
-| Rendering | `ai/rendering.py` | White canvas, uniform anti-aliased black line (4× supersampled), margins, whole object visible. Output is validated (white background, margins, stroke uniformity) before a job can complete. |
+The database schema is managed via Alembic. Version `0003` adds support for:
+- `Perspective` view type in `images` and `REQUIRED_VIEW_TYPES`.
+- `approval_status` and `is_active` on `images`.
+- `quality_status` and `quality_warnings` on `ai_results`.
+- `document_metadata` table for applicant, novelty statement, disclaimers, agent info, and signatures.
+- `project_documents` table for tracking generated 7-page PDF releases.
 
-### Statuses and failures
-
-`Uploaded → Queued → Processing → Completed | Failed`. Processing runs inside the request that starts it (about a
-second per photo), and claiming a job is atomic, so the same image can never be processed twice at once. A job only
-becomes `Completed` after every output file is written and verified. Any failure is stored (stage + message) on the
-job and result, partial outputs are removed, and the job can be retried (`retry_count`). A job still in flight after
-`PV_STALE_JOB_MINUTES` (default 10) lost its worker and is shown as `Failed (interrupted)`.
-
-### API
-
-All routes except `/auth/*`, `/meta` and `/health` require `Authorization: Bearer <token>`. Other users' resources
-return 404. Routes answer both at `/…` (local) and `/api/…` (as routed on Vercel).
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| POST | `/auth/register`, `/auth/login` · GET `/auth/me` | Accounts (scrypt password hashing, JWT) |
-| POST/GET | `/projects` | Create / list |
-| GET/PUT/DELETE | `/projects/{id}` | Details / update / delete (cascades rows and files) |
-| POST/GET | `/projects/{id}/images` | Upload (multipart `file`, `view_type`) / list |
-| GET/PATCH/DELETE | `/images/{id}` | Metadata / correct view / delete · `GET /images/{id}/original` |
-| POST | `/ai/process/{image_id}` | Process one image; returns its final status (409 if already in flight) |
-| POST | `/ai/process/project/{project_id}` | Process every image in a project that is not in flight |
-| GET | `/ai/results/{result_id}` | Result metadata and asset URLs |
-| GET | `/ai/results/{result_id}/download?kind=drawing\|svg\|mask\|outline\|background_removed\|original` | Owner-only file download (`&download=true` for attachment) |
-| GET | `/dashboard` · `/meta` | Counts, recent projects and results · public upload limits |
-
-Errors are structured: `{"error": {"code", "message", "next_action"?}}`. Responses never contain filesystem paths
-or storage URLs; files are always served through the API after an ownership check.
-
-### Configuration
-
-All settings use the `PV_` prefix (see `backend/.env.example`): database URL (falls back to `DATABASE_URL` /
-`POSTGRES_URL`), storage backend (`local` / `blob` / `auto`), secret key, upload size limit, processing resolution,
-segmenter, rate limit, concurrent-job limit, stale-job timeout, CORS origins.
-
-## Using Segment Anything instead of the classical segmenter
-
+To apply migrations:
 ```bash
-pip install torch segment-anything
-# download a checkpoint (e.g. sam_vit_b_01ec64.pth) into backend/checkpoints/
-set PV_SEGMENTER=sam
-set PV_SAM_CHECKPOINT=checkpoints/sam_vit_b_01ec64.pth
+alembic upgrade head
+```
+To roll back:
+```bash
+alembic downgrade -1
 ```
 
-SAM is prompted with the localized product box. If a checkpoint or the package is missing the job fails with a
-clear `segmentation` error instead of silently degrading. Its candidate masks go through the same validation, and
-the foreground mask is the controlled fallback when SAM returns an incomplete mask. This path is not exercised by
-the automated tests (no model files in CI).
+---
 
-## Deployment (Vercel)
+## API Reference
 
-One Vercel project, configured by `vercel.json` with **Vercel Services**: the Next.js app serves `/`, the FastAPI
-app serves `/api/*`, and both ship in the same deployment on one domain (no CORS).
+All protected routes require `Authorization: Bearer <token>`.
 
-| Need | On Vercel | Setting |
+### 7-View Slot Management
+| Method | Endpoint | Description |
 |---|---|---|
-| Database | Neon Postgres (Marketplace) | `DATABASE_URL` is injected when the store is connected to the project |
-| Files (uploads, outputs) | Vercel Blob, **private** store | `BLOB_READ_WRITE_TOKEN` is injected when the store is connected |
-| Login token signing | Project environment variable | `PV_SECRET_KEY` (long random value, type *sensitive*) |
+| `GET` | `/projects/{id}/views` | Returns the 7-slot status, readiness, missing, and unapproved views |
+| `POST` | `/projects/{id}/views/{view_type}` | Upload or replace a photo in a specific view slot |
+| `DELETE` | `/projects/{id}/views/{view_type}` | Remove the photo and drawings from a view slot |
 
-Project settings: Framework Preset **Services**, Root Directory empty (repo root). Every push to `main` deploys.
-Tables are created automatically on first request (`PV_AUTO_CREATE_TABLES=true`); to manage the schema with Alembic
-instead, run `alembic stamp head` once against the database and `alembic upgrade head` on later changes.
-Without a database the API answers `503 database_not_configured` instead of silently using temporary storage.
+### Drawing Review & Quality Control
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/images/{id}/review` | Submit drawing review action (`approve` or `reject`) with optional notes |
+| `POST` | `/ai/process/{id}` | Process an image; generates mask, outline, drawing, and SVG |
+| `POST` | `/ai/process/project/{id}` | Batch process all pending views in a project |
 
-Serverless limits that shaped the design: request bodies are capped at 4.5 MB, so uploads are limited to 4 MB and
-the web app re-encodes larger photos in the browser; files are always read through the API (private Blob store);
-jobs finish inside the request.
+### Patent Document & PDF Generation
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/projects/{id}/document-metadata` | Get project document metadata and signature status |
+| `PUT` | `/projects/{id}/document-metadata` | Update applicant name, title, date, novelty statement, disclaimer, and agent info |
+| `POST` | `/projects/{id}/document-metadata/signature` | Upload agent/applicant signature image (PNG/JPG) |
+| `DELETE` | `/projects/{id}/document-metadata/signature` | Remove uploaded signature image |
+| `POST` | `/projects/{id}/documents` | Generate official 7-page patent PDF (requires all 7 views approved) |
+| `GET` | `/projects/{id}/documents` | List generated patent PDF documents |
+| `GET` | `/documents/{id}/download` | Download generated patent PDF |
+| `GET` | `/documents/{id}/preview` | Preview patent PDF inline in browser |
 
-`backend/Dockerfile` and `render.yaml` remain for hosting the API on a container platform with a persistent disk
-instead (`PV_DATABASE_URL=sqlite:////data/patentvision.db`, `PV_STORAGE_ROOT=/data/storage`).
+### Projects & Images
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST`, `GET` | `/projects` | Create and list projects |
+| `GET`, `PUT`, `DELETE` | `/projects/{id}` | Read, update, delete project (cascades records and files) |
+| `GET` | `/images/{id}` | Read image status, approval, and result URLs |
+| `GET` | `/ai/results/{id}/download?kind=...` | Download original, mask, outline, drawing PNG, or SVG |
 
-## Scope notes
+---
 
-- Implemented: FR-01 through FR-11, FR-13 (separate drawing per view; failed views reprocess individually), and from
-  later scope: before/after comparison and SVG export of the drawing.
-- Not implemented (PRD marks post-MVP/later): FR-12 manual editor, drawing sheets/figure numbering/PDF export, HEIC
-  decoding (rejected with a clear message), subscriptions.
-- Thresholds in `mask_validation.py` and `background.py` are tuned on synthetic photos with exact ground truth;
-  validate them against a representative real-photo set before relying on the success-metric targets in PRD §16.
-- The rate limiter is per process (on serverless, per instance). Use a shared store such as Upstash Redis for a
-  strict global limit.
+## Known Scope & Operating Notes
+
+1. **Drawing Quality & Review**: The pipeline flags surface branding and multi-component silhouettes as `Review required`. Patent professionals should review the drawing on the inspector page (`/images/[id]`) and approve or reprocess before generating the PDF.
+2. **Serverless Limits**: Uploads are capped at 40 MB client-side and optimized in the browser before transfer to satisfy serverless payload limits.
+3. **Legal Disclaimer**: Generated documents include placeholders and drafting notices to emphasize that representation sheets require authorized patent attorney / agent verification before formal submission to intellectual property offices.

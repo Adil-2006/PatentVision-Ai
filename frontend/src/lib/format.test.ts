@@ -41,6 +41,7 @@ describe("status helpers", () => {
     expect(processActionLabel("Uploaded")).toBe("Generate drawing");
     expect(processActionLabel("Failed")).toBe("Retry");
     expect(processActionLabel("Completed")).toBe("Reprocess");
+    expect(processActionLabel("Review required")).toBe("Review / Reprocess");
     expect(processActionLabel("Processing")).toBeNull();
     expect(processActionLabel("Queued")).toBeNull();
   });

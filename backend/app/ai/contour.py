@@ -84,6 +84,27 @@ def extract_contours(mask: np.ndarray, smooth: bool = True, keep_openings: bool 
         raise PipelineError("contour_extraction", "The mask has no external contour.")
     largest = max(areas[i] for i in outer_idx)
     outer_idx = [i for i in outer_idx if areas[i] >= MIN_COMPONENT_RATIO * largest and len(found[i]) >= 8]
+
+    # Filter out disconnected background objects (e.g. chairs, walls, side furniture clipped by the image edge)
+    if len(outer_idx) > 1:
+        largest_i = max(outer_idx, key=lambda idx: areas[idx])
+        lx, ly, lw, lh = cv2.boundingRect(found[largest_i].astype(np.int32))
+        lcx = lx + lw / 2.0
+        h_img, w_img = mask.shape
+        filtered = []
+        for i in outer_idx:
+            if i == largest_i:
+                filtered.append(i)
+                continue
+            x, y, w, h = cv2.boundingRect(found[i].astype(np.int32))
+            cx = x + w / 2.0
+            touches_lateral = (x <= 1 or x + w >= w_img - 1)
+            is_far_lateral = abs(cx - lcx) > 0.30 * w_img
+            if touches_lateral and is_far_lateral:
+                continue
+            filtered.append(i)
+        if filtered:
+            outer_idx = filtered
     total_outer = sum(areas[i] for i in outer_idx)
     hole_idx = [
         i

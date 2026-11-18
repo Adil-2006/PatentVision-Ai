@@ -76,4 +76,12 @@ describe("api client", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("failed"));
     await expect(api.me()).rejects.toMatchObject({ code: "network", status: 0 });
   });
+  it("supports 7-view upload, review and document generation methods", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ is_ready_to_process: false, missing_views: ["Front"] }), { status: 200 }),
+    );
+    const views = await api.getProjectViews(1);
+    expect(views.missing_views).toContain("Front");
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/projects\/1\/views$/);
+  });
 });

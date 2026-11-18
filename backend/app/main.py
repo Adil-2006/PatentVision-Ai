@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import ai, auth, dashboard, images, projects
+from app.api import ai, auth, dashboard, documents, images, projects
 from app.core import database
 from app.core.config import get_settings
 from app.core.errors import install_error_handlers
@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(PlatformMiddleware, prefix=settings.api_prefix)
     install_error_handlers(app)
-    for router in (auth.router, projects.router, images.router, ai.router, dashboard.router):
+    for router in (auth.router, projects.router, images.router, ai.router, dashboard.router, documents.router):
         app.include_router(router)
 
     @app.get("/health", tags=["meta"])
