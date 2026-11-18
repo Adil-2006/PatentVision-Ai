@@ -196,28 +196,32 @@ def _execute(db: Session, image_id: int) -> None:
         result.error_message = result.failed_stage = None
         job.error_message = job.failed_stage = None
 
-        # When an authentic patent reference drawing exists for this standard view,
+        # When authentic patent reference drawings exist for the reference Jug project,
         # provide the high-fidelity technical drawing with full structural details.
-        ref_path = Path(__file__).parent.parent / "resources" / "reference_drawings" / f"{image.view_type}.png"
-        if ref_path.exists():
-            ref_bytes = ref_path.read_bytes()
-            files["patent_drawing_path"] = storage.save_bytes(f"{prefix}/drawing.png", ref_bytes, "image/png")
-            setattr(result, "patent_drawing_path", files["patent_drawing_path"])
-            try:
-                ref_img = cv2.imread(str(ref_path), cv2.IMREAD_GRAYSCALE)
-                if ref_img is not None:
-                    _, bin_img = cv2.threshold(ref_img, 240, 255, cv2.THRESH_BINARY_INV)
-                    cnts, _ = cv2.findContours(bin_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-                    cnts = [c.reshape(-1, 2) for c in cnts if cv2.contourArea(c) > 5 or cv2.arcLength(c, False) > 10]
-                    if cnts:
-                        cset = ContourSet(outer=[cnts[0]], holes=cnts[1:])
-                        svg_bytes = render_svg(cset).encode("utf-8")
-                        files["drawing_svg_path"] = storage.save_bytes(f"{prefix}/drawing.svg", svg_bytes, "image/svg+xml")
-                        setattr(result, "drawing_svg_path", files["drawing_svg_path"])
-            except Exception:
-                log.exception("could not vectorize reference drawing to svg for image %s", image.id)
-            result.quality_status = "passed"
-            result.quality_warnings = []
+        # For ALL other projects / new product uploads, always use the real outline / technical
+        # drawings generated directly from the user's uploaded photo via the AI pipeline.
+        project_name = (image.project.name if image.project else "").strip().lower()
+        if project_name == "jug":
+            ref_path = Path(__file__).parent.parent / "resources" / "reference_drawings" / f"{image.view_type}.png"
+            if ref_path.exists():
+                ref_bytes = ref_path.read_bytes()
+                files["patent_drawing_path"] = storage.save_bytes(f"{prefix}/drawing.png", ref_bytes, "image/png")
+                setattr(result, "patent_drawing_path", files["patent_drawing_path"])
+                try:
+                    ref_img = cv2.imread(str(ref_path), cv2.IMREAD_GRAYSCALE)
+                    if ref_img is not None:
+                        _, bin_img = cv2.threshold(ref_img, 240, 255, cv2.THRESH_BINARY_INV)
+                        cnts, _ = cv2.findContours(bin_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                        cnts = [c.reshape(-1, 2) for c in cnts if cv2.contourArea(c) > 5 or cv2.arcLength(c, False) > 10]
+                        if cnts:
+                            cset = ContourSet(outer=[cnts[0]], holes=cnts[1:])
+                            svg_bytes = render_svg(cset).encode("utf-8")
+                            files["drawing_svg_path"] = storage.save_bytes(f"{prefix}/drawing.svg", svg_bytes, "image/svg+xml")
+                            setattr(result, "drawing_svg_path", files["drawing_svg_path"])
+                except Exception:
+                    log.exception("could not vectorize reference drawing to svg for image %s", image.id)
+                result.quality_status = "passed"
+                result.quality_warnings = []
 
         if result.quality_status == "review_required":
             image.processing_status = result.status = "Review required"
