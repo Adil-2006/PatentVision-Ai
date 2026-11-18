@@ -86,7 +86,7 @@ def download_result(
     if kind == "original":
         key, mime, ext = image.storage_key, image.mime_type, image.storage_key.rsplit(".", 1)[-1]
     else:
-        if result.status != "Completed":
+        if result.status not in ("Completed", "Review required"):
             raise ApiError(
                 409,
                 "result_not_ready",
