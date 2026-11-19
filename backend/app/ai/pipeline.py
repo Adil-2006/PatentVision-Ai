@@ -43,13 +43,23 @@ class PipelineOutput:
     diagnostics: dict[str, bytes] = field(default_factory=dict)
 
 
-def extract_photo_edges(bgr: np.ndarray) -> np.ndarray:
-    """Extract sharp patent-style edges matching Colab Cell 11: CLAHE + Bilateral + Canny (L2)."""
+def extract_photo_edges(bgr: np.ndarray, view_type: str | None = None) -> np.ndarray:
+    """Extract sharp patent-style edges: CLAHE + Bilateral + Canny (L2 gradient)."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=45, sigmaSpace=45)
-    return cv2.Canny(blurred, 25, 75, L2gradient=True)
+    vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
+    is_bottom = vt_norm in ("bottom", "bottomview")
+    
+    if is_bottom:
+        # For textured bottom bases: suppress high-frequency 3D-print micro-speckles while preserving concentric rings/grooves
+        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=60, sigmaSpace=60)
+        return cv2.Canny(blurred, 35, 90, L2gradient=True)
+    else:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=45, sigmaSpace=45)
+        return cv2.Canny(blurred, 25, 75, L2gradient=True)
 
 
 def fill_enclosed_cavities(mask: np.ndarray) -> np.ndarray:
@@ -108,8 +118,8 @@ def run_pipeline(
     bgr = loaded.bgr
     w, h = loaded.size
 
-    # Step 1: Extract genuine photographic edges from the original image (Colab Cell 11)
-    photo_edges = extract_photo_edges(bgr)
+    # Step 1: Extract genuine photographic edges from the original image
+    photo_edges = extract_photo_edges(bgr, view_type=view_type)
 
     stage("background_removal")
     foreground = remover.remove(bgr, loaded.prior_mask)
@@ -145,11 +155,15 @@ def run_pipeline(
             if by + bh <= int(h * 0.70):
                 internal_edges[by : by + bh, bx : bx + bw] = 0
 
-    # Filter small noise specks (< 4px) from internal edges
+    vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
+    is_bottom_view = vt_norm in ("bottom", "bottomview")
+    min_area = 8 if is_bottom_view else 4
+
+    # Filter small noise specks from internal edges
     n_ie, labels_ie, stats_ie, _ = cv2.connectedComponentsWithStats(internal_edges, connectivity=8)
     clean_internal = np.zeros_like(internal_edges)
     for i in range(1, n_ie):
-        if stats_ie[i, cv2.CC_STAT_AREA] >= 4:
+        if stats_ie[i, cv2.CC_STAT_AREA] >= min_area:
             clean_internal[labels_ie == i] = 255
 
     stage("contour_extraction")
@@ -166,20 +180,23 @@ def run_pipeline(
     raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     internal_contours: list[np.ndarray] = []
     mid_y0, mid_y1 = int(h * 0.36), int(h * 0.66)
-    vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
     is_side_view = vt_norm in (
         "front", "frontview", "rear", "rearview", "left", "leftview", "leftside", "right", "rightview", "rightside"
     )
+    min_cnt_len = 35 if is_bottom_view else 5
+    min_cnt_pts = 5 if is_bottom_view else 3
+    eps_scale = 0.0010 if is_bottom_view else 0.0008
+
     for c in raw_int_cnts:
         length = float(cv2.arcLength(c, False))
-        if length < 5 or len(c) < 3:
+        if length < min_cnt_len or len(c) < min_cnt_pts:
             continue
         x, y, bw, bh = cv2.boundingRect(c)
         # Suppress wide, horizontal reflection streaks in smooth mid-body section only on side views
         if is_side_view and y >= mid_y0 and y + bh <= mid_y1:
             if bw / float(max(1, bh)) > 2.5 or bw > 0.30 * w:
                 continue
-        eps_int = 0.0008 * length
+        eps_int = eps_scale * length
         sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
         pts = sm.reshape(-1, 2).astype(np.float32)
         if len(pts) >= 2:

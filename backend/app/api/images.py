@@ -67,18 +67,13 @@ def upload_image(
             )
         )
         if existing:
-            if existing.processing_status in ("Queued", "Processing"):
-                raise ApiError(
-                    409,
-                    "already_processing",
-                    f"The current {view_type} view is being processed.",
-                    "Wait for the job to finish before replacing.",
-                )
+            expire_stale(db, [existing])
             old_key = existing.storage_key
             old_id = existing.id
             db.delete(existing)
             db.flush()
-            storage.delete(old_key)
+            if old_key:
+                storage.delete(old_key)
             storage.delete_tree(f"generated/{project.id}/{old_id}")
 
     key = f"uploads/{project.id}/{uuid.uuid4().hex}.{info.ext}"
@@ -148,7 +143,11 @@ def list_project_views(
     unapproved_views = [
         v
         for v in REQUIRED_VIEW_TYPES
-        if views_map[v] is None or views_map[v].approval_status != "approved"
+        if views_map[v] is None
+        or views_map[v].approval_status != "approved"
+        or views_map[v].processing_status != "Completed"
+        or not views_map[v].result
+        or not views_map[v].result.urls.get("drawing")
     ]
 
     return ProjectViewsOut(
@@ -181,13 +180,14 @@ def delete_view(
     )
     if not image:
         raise ApiError(404, "view_not_found", f"No image found for view slot '{view_type}'.")
-    if image.processing_status in ("Queued", "Processing"):
-        raise ApiError(409, "already_processing", "This image is being processed.", "Wait for the job to finish.")
+    expire_stale(db, [image])
     key, pid, iid = image.storage_key, image.project_id, image.id
     db.delete(image)
     db.commit()
-    storage.delete(key)
+    if key:
+        storage.delete(key)
     storage.delete_tree(f"generated/{pid}/{iid}")
+    storage.delete_tree(f"diagnostics/{pid}/{iid}")
     return Response(status_code=204)
 
 
@@ -201,15 +201,16 @@ def review_image(
     """Approve or reject a processed technical drawing."""
     image = get_owned_image(db, user, image_id)
     if body.action == "approve":
-        if (
-            image.processing_status == "Failed"
-            or not image.result
-            or not image.result.patent_drawing_path
-        ):
+        has_drawing = bool(
+            image.result
+            and image.result.patent_drawing_path
+            and storage.exists(image.result.patent_drawing_path)
+        )
+        if image.processing_status != "Completed" or not has_drawing:
             raise ApiError(
                 400,
                 "cannot_approve",
-                "Cannot approve an image that has failed processing or has not produced a drawing.",
+                "Cannot approve an image that has failed processing or does not have a verified drawing file.",
                 "Process or retry the image first.",
             )
         image.approval_status = "approved"

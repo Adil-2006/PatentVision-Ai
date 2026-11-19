@@ -255,6 +255,7 @@ def _mark_failed(db: Session, image_id: int, stage: str, message: str) -> None:
         return
     job, result = image.job, image.result
     image.processing_status = "Failed"
+    image.approval_status = "pending"
     if job:
         job.job_status, job.error_message, job.failed_stage, job.completed_at = "Failed", message, stage, utcnow()
     if result:

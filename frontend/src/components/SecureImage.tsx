@@ -17,6 +17,7 @@ interface Props {
 export function SecureImage({ src, alt, className = "", placeholder = "Not available", version }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let revoked = false;
@@ -24,23 +25,51 @@ export function SecureImage({ src, alt, className = "", placeholder = "Not avail
     setUrl(null);
     setFailed(false);
     if (!src) return;
-    fetchBlob(src)
-      .then((blob) => {
-        if (revoked) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => !revoked && setFailed(true));
+
+    let attempts = 0;
+    const fetchWithRetry = () => {
+      fetchBlob(src)
+        .then((blob) => {
+          if (revoked) return;
+          objectUrl = URL.createObjectURL(blob);
+          setUrl(objectUrl);
+        })
+        .catch(() => {
+          if (revoked) return;
+          if (attempts < 1) {
+            attempts++;
+            setTimeout(fetchWithRetry, 600);
+          } else {
+            setFailed(true);
+          }
+        });
+    };
+
+    fetchWithRetry();
+
     return () => {
       revoked = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [src, version]);
+  }, [src, version, retryKey]);
 
   if (!src || failed) {
     return (
-      <div className={`flex items-center justify-center text-sm text-slate-400 ${className}`}>
-        {failed ? "Could not load" : placeholder}
+      <div className={`flex flex-col items-center justify-center gap-1.5 text-xs text-slate-400 ${className}`}>
+        <span>{failed ? "Could not load" : placeholder}</span>
+        {failed && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setRetryKey((k) => k + 1);
+            }}
+            className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-blue-600 shadow-sm hover:bg-slate-50"
+          >
+            Retry
+          </button>
+        )}
       </div>
     );
   }

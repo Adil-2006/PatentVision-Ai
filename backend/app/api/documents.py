@@ -195,15 +195,21 @@ def generate_document(
             "Upload photos for all seven required views.",
         )
 
-    # 2. Check all seven views are approved
+    # 2. Check all seven views are approved, completed, and have valid drawings in storage
     unapproved = [
-        v for v, img in active_images.items() if img.approval_status != "approved"
+        v
+        for v, img in active_images.items()
+        if img.approval_status != "approved"
+        or img.processing_status != "Completed"
+        or not img.result
+        or not img.result.patent_drawing_path
+        or not storage.exists(img.result.patent_drawing_path)
     ]
     if unapproved:
         raise ApiError(
             400,
             "views_not_approved",
-            f"Cannot generate patent document: {len(unapproved)} view(s) are not yet approved: {', '.join(unapproved)}.",
+            f"Cannot generate patent document: {len(unapproved)} view(s) are not ready/approved: {', '.join(unapproved)}.",
             "Review and approve all seven technical drawings before generating the document.",
         )
 
@@ -238,14 +244,25 @@ def generate_document(
     doc_key = f"documents/{project.id}/{filename}"
     storage.save_bytes(doc_key, pdf_bytes, "application/pdf")
 
-    doc = ProjectDocument(
-        project_id=project.id,
-        version=version,
-        storage_key=doc_key,
-        filename=filename,
-        page_count=7,
+    # Check if a document record already exists for this exact project and storage key to prevent duplicate entries
+    existing_doc = db.scalar(
+        select(ProjectDocument).where(
+            ProjectDocument.project_id == project.id,
+            ProjectDocument.storage_key == doc_key,
+        )
     )
-    db.add(doc)
+    if existing_doc:
+        existing_doc.created_at = utcnow()
+        doc = existing_doc
+    else:
+        doc = ProjectDocument(
+            project_id=project.id,
+            version=version,
+            storage_key=doc_key,
+            filename=filename,
+            page_count=7,
+        )
+        db.add(doc)
     db.commit()
     db.refresh(doc)
 
@@ -296,19 +313,31 @@ def _get_owned_document(db: Session, user: User, document_id: int) -> ProjectDoc
     return doc
 
 
+@router.get("/projects/{project_id}/documents/{document_id}/download")
 @router.get("/documents/{document_id}/download")
 def download_document(
-    document_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    document_id: int,
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     doc = _get_owned_document(db, user, document_id)
+    if project_id is not None and doc.project_id != project_id:
+        raise ApiError(404, "document_not_found", "Document does not belong to the requested project.")
     return file_response(doc.storage_key, "application/pdf", doc.filename, "Regenerate the document.")
 
 
+@router.get("/projects/{project_id}/documents/{document_id}/preview")
 @router.get("/documents/{document_id}/preview")
 def preview_document(
-    document_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    document_id: int,
+    project_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     doc = _get_owned_document(db, user, document_id)
+    if project_id is not None and doc.project_id != project_id:
+        raise ApiError(404, "document_not_found", "Document does not belong to the requested project.")
     return file_response(doc.storage_key, "application/pdf", None, "Regenerate the document.")
 
 

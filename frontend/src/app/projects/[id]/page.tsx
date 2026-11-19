@@ -77,6 +77,7 @@ function ProjectView({ id }: { id: number }) {
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [downloadingDocId, setDownloadingDocId] = useState<number | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
   const [sigUploading, setSigUploading] = useState(false);
 
@@ -361,10 +362,15 @@ function ProjectView({ id }: { id: number }) {
   }
 
   async function handleDownload(doc: ProjectDocument) {
+    setDownloadingDocId(doc.id);
     try {
       await downloadFile(`/documents/${doc.id}/download`, doc.filename);
+      toast("success", `Downloaded ${doc.filename}`);
     } catch (err) {
       setError(err);
+      toast("error", "Failed to download PDF. Please try again.");
+    } finally {
+      setDownloadingDocId(null);
     }
   }
 
@@ -373,8 +379,10 @@ function ProjectView({ id }: { id: number }) {
       const blob = await fetchBlob(`/documents/${doc.id}/preview`);
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
       setError(err);
+      toast("error", "Failed to open PDF preview.");
     }
   }
 
@@ -383,9 +391,17 @@ function ProjectView({ id }: { id: number }) {
   }
 
   const uploadedCount = REQUIRED_VIEW_TYPES.filter((v) => views[v] !== null).length;
-  const drawingCount = REQUIRED_VIEW_TYPES.filter((v) => views[v]?.result?.urls.drawing).length;
-  const approvedCount = REQUIRED_VIEW_TYPES.filter((v) => views[v]?.approval_status === "approved").length;
-  const allApproved = approvedCount === 7;
+  const drawingCount = REQUIRED_VIEW_TYPES.filter(
+    (v) => views[v] !== null && views[v]?.processing_status === "Completed" && Boolean(views[v]?.result?.urls.drawing)
+  ).length;
+  const approvedCount = REQUIRED_VIEW_TYPES.filter(
+    (v) =>
+      views[v] !== null &&
+      views[v]?.approval_status === "approved" &&
+      views[v]?.processing_status === "Completed" &&
+      Boolean(views[v]?.result?.urls.drawing)
+  ).length;
+  const allApproved = approvedCount === 7 && uploadedCount === 7 && drawingCount === 7;
   const pendingProcessing = REQUIRED_VIEW_TYPES.map((v) => views[v]).filter(
     (img): img is ImageItem => img !== null && !isActive(img.processing_status) && !busy.has(img.id) && img.processing_status !== "Completed"
   );
@@ -828,9 +844,22 @@ function ProjectView({ id }: { id: number }) {
                     </button>
                     <button
                       onClick={() => handleDownload(doc)}
-                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                      disabled={downloadingDocId === doc.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-50"
                     >
-                      Download PDF
+                      {downloadingDocId === doc.id ? (
+                        <>
+                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                          Downloading…
+                        </>
+                      ) : (
+                        <>
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                          Download PDF
+                        </>
+                      )}
                     </button>
                   </div>
                 </li>

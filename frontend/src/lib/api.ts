@@ -161,5 +161,8 @@ export async function downloadFile(urlPath: string, filename: string): Promise<v
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(href);
+  // Keep object URL alive for 15 seconds to allow browser download manager to finish saving
+  setTimeout(() => {
+    URL.revokeObjectURL(href);
+  }, 15_000);
 }
