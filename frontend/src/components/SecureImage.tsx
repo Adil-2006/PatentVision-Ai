@@ -36,9 +36,9 @@ export function SecureImage({ src, alt, className = "", placeholder = "Not avail
         })
         .catch(() => {
           if (revoked) return;
-          if (attempts < 1) {
+          if (attempts < 3) {
             attempts++;
-            setTimeout(fetchWithRetry, 600);
+            setTimeout(fetchWithRetry, 800 * attempts);
           } else {
             setFailed(true);
           }

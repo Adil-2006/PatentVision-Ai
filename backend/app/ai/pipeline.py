@@ -98,76 +98,7 @@ def validate_view_geometry(view_type: str | None, contours: ContourSet, shape: t
     return warnings
 
 
-def _extract_top_knob_contours(mask: np.ndarray, has_knob: bool = True) -> list[np.ndarray]:
-    """Generate crisp CAD concentric circles for top view central knob/cap feature."""
-    pts = np.argwhere(mask > 128)
-    if len(pts) == 0:
-        return []
-    ymin, xmin = pts.min(axis=0)
-    ymax, xmax = pts.max(axis=0)
-    h, w = ymax - ymin, xmax - xmin
-    # In top view, handle typically extends downwards; circular body is in upper portion
-    r_body = min(w, h) * 0.42
-    cx = float(xmin + w * 0.50)
-    cy = float(ymin + min(w, h) * 0.44)
 
-    r_knob = max(14.0, r_body * 0.17)
-    r_stalk = max(9.0, r_body * 0.11)
-
-    theta = np.linspace(0, 2 * np.pi, 64, endpoint=False)
-    pts_knob = np.stack([cx + r_knob * np.cos(theta), cy + r_knob * np.sin(theta)], axis=1).astype(np.float32)
-    pts_stalk = np.stack([cx + r_stalk * np.cos(theta), cy + r_stalk * np.sin(theta)], axis=1).astype(np.float32)
-    return [pts_knob, pts_stalk]
-
-
-def _extract_bottom_mesh_contours(mask: np.ndarray, has_mesh: bool = True) -> list[np.ndarray]:
-    """Generate inner circular rim and 45-degree technical crosshatch mesh for bottom view."""
-    pts = np.argwhere(mask > 128)
-    if len(pts) == 0:
-        return []
-    ymin, xmin = pts.min(axis=0)
-    ymax, xmax = pts.max(axis=0)
-    h, w = ymax - ymin, xmax - xmin
-    # In bottom view, handle typically extends to the left or right; base circle is centered
-    r_base = float(h * 0.48)
-    cx = float(xmax - h * 0.50)
-    cy = float(ymin + h * 0.50)
-    r_inner = r_base * 0.82
-
-    theta = np.linspace(0, 2 * np.pi, 96, endpoint=False)
-    pts_inner = np.stack([cx + r_inner * np.cos(theta), cy + r_inner * np.sin(theta)], axis=1).astype(np.float32)
-    out_lines = [pts_inner]
-
-    # Handle center dividing line: from left of circle to left margin
-    handle_line = np.array([[xmin + 10, cy], [cx - r_base + 5, cy]], dtype=np.float32)
-    out_lines.append(handle_line)
-
-    if has_mesh:
-        grid_spacing = 26.0
-        c0 = cx + cy
-        n_lines = int(r_inner * 2 // grid_spacing)
-        for i in range(-n_lines // 2, n_lines // 2 + 1):
-            c_val = c0 + i * grid_spacing
-            d = (c_val - cx - cy) / np.sqrt(2.0)
-            if abs(d) < r_inner:
-                half_len = np.sqrt(r_inner**2 - d**2)
-                mid_x = (cx + cy + c_val) / 2.0 - cy
-                mid_y = c_val - mid_x
-                p1 = np.array([mid_x - half_len / np.sqrt(2), mid_y + half_len / np.sqrt(2)], dtype=np.float32)
-                p2 = np.array([mid_x + half_len / np.sqrt(2), mid_y - half_len / np.sqrt(2)], dtype=np.float32)
-                out_lines.append(np.stack([p1, p2], axis=0))
-
-            k_val = cy - cx + i * grid_spacing
-            d2 = (k_val - (cy - cx)) / np.sqrt(2.0)
-            if abs(d2) < r_inner:
-                half_len2 = np.sqrt(r_inner**2 - d2**2)
-                mid_x2 = cx - d2 / np.sqrt(2)
-                mid_y2 = mid_x2 + k_val
-                p2_1 = np.array([mid_x2 - half_len2 / np.sqrt(2), mid_y2 - half_len2 / np.sqrt(2)], dtype=np.float32)
-                p2_2 = np.array([mid_x2 + half_len2 / np.sqrt(2), mid_y2 + half_len2 / np.sqrt(2)], dtype=np.float32)
-                out_lines.append(np.stack([p2_1, p2_2], axis=0))
-
-    return out_lines
 
 
 def run_pipeline(
@@ -239,12 +170,6 @@ def run_pipeline(
     # Restrict photo edges to the interior of the product mask (Colab Cell 11)
     eroded_mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=2)
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
-    if branding_regions:
-        for r in branding_regions:
-            if r.confidence >= 0.85:
-                bx, by, bw, bh = r.bbox
-                if bw < 0.35 * w and by + bh <= int(h * 0.70):
-                    internal_edges[by : by + bh, bx : bx + bw] = 0
 
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
     is_bottom_view = vt_norm in ("bottom", "bottomview")
@@ -267,46 +192,25 @@ def run_pipeline(
         sm = cv2.approxPolyDP(oc.astype(np.float32), eps_out, True)
         smoothed_outer.append(sm.reshape(-1, 2).astype(np.float32))
 
-    # Extract internal structural contours with mid-body reflection arc suppression
+    # Extract internal structural contours directly from photographic edges
     raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     internal_contours: list[np.ndarray] = []
-    mid_y0, mid_y1 = int(h * 0.36), int(h * 0.66)
-    is_side_view = vt_norm in (
-        "front", "frontview", "rear", "rearview", "left", "leftview", "leftside", "right", "rightview", "rightside"
-    )
-    min_cnt_len = 35 if is_bottom_view else 5
-    min_cnt_pts = 5 if is_bottom_view else 3
+    min_cnt_len = 20 if is_bottom_view else 5
+    min_cnt_pts = 4 if is_bottom_view else 3
     eps_scale = 0.0010 if is_bottom_view else 0.0008
 
     for c in raw_int_cnts:
         length = float(cv2.arcLength(c, False))
         if length < min_cnt_len or len(c) < min_cnt_pts:
             continue
-        x, y, bw, bh = cv2.boundingRect(c)
-        # Suppress wide, horizontal reflection streaks in smooth mid-body section only on side views
-        if is_side_view and y >= mid_y0 and y + bh <= mid_y1:
-            if (bw > 0.25 * w or (bw / float(max(1, bh)) > 3.5 and bw > 80)) and (0.20 * w < x < 0.80 * w):
-                continue
         eps_int = eps_scale * length
         sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
         pts = sm.reshape(-1, 2).astype(np.float32)
         if len(pts) >= 2:
             internal_contours.append(pts)
 
-    # Step 6: Combine external silhouette and internal structural lines when view_type is set or internal preservation requested
+    # Step 6: Combine external silhouette and internal structural lines
     has_internal_active = view_type is not None or getattr(settings, "preserve_internal_features", False)
-
-    # View-specific CAD structural enhancement guided by product_description:
-    desc_text = f"{product_name or ''} {product_description or ''}".lower()
-    has_knob = any(k in desc_text for k in ["knob", "lid", "cap", "handle", "pitcher", "jug", "pot"])
-    has_mesh = any(k in desc_text for k in ["mesh", "filter", "grid", "screen", "strainer", "perforat", "crosshatch"])
-
-    if vt_norm in ("top", "topview"):
-        knob_cnts = _extract_top_knob_contours(mask, has_knob)
-        internal_contours.extend(knob_cnts)
-    elif is_bottom_view:
-        mesh_cnts = _extract_bottom_mesh_contours(mask, has_mesh)
-        internal_contours.extend(mesh_cnts)
 
     contours = ContourSet(
         outer=smoothed_outer if smoothed_outer else silhouette_contours.outer,
