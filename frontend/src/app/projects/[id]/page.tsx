@@ -1026,6 +1026,15 @@ function SlotCard({
               </div>
 
               <div className="flex items-center gap-1.5">
+                {hasDrawing && (
+                  <Link
+                    href={`/images/${img.id}`}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                    title="Inspect 8 pipeline stages"
+                  >
+                    Diagnostics
+                  </Link>
+                )}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}

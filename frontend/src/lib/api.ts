@@ -142,6 +142,8 @@ export const api = {
   processImage: (id: number) =>
     json<{ image_id: number; status: ImageItem["processing_status"] }>(`/ai/process/${id}`, { method: "POST" }),
   processProject: (id: number) => json<{ queued: number[]; skipped: number[] }>(`/ai/process/project/${id}`, { method: "POST" }),
+  getDiagnostics: (imageId: number) =>
+    json<{ image_id: number; stages: { stage: string; label: string; url: string }[] }>(`/images/${imageId}/diagnostics`),
 };
 
 /** Fetch a protected file (images need the bearer token, so <img src> cannot be used directly). */

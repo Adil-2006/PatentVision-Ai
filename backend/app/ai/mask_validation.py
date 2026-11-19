@@ -16,9 +16,9 @@ from app.ai.masks import (
 
 MIN_AREA_RATIO = 0.005
 MAX_AREA_RATIO = 0.92
-MIN_COVERAGE = 0.88
-MAX_CONTAMINATION = 0.20
-MIN_BOX_IOU = 0.97
+MIN_COVERAGE = 0.75
+MAX_CONTAMINATION = 0.08
+MIN_BOX_IOU = 0.70
 MAX_BORDER_CONTACT = 0.50
 HOLE_AREA_RATIO = 0.01  # enclosed pockets below this share of the product are noise (logos, text)
 
@@ -50,7 +50,15 @@ def clean_mask(mask: np.ndarray, gap_px: int, keep_openings: bool = False) -> np
         return m
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, ellipse(3))
     m = select_product_components(m, gap_px)
-    return fill_small_holes(m, hole_ratio(keep_openings) * np.count_nonzero(m))
+    m = fill_small_holes(m, hole_ratio(keep_openings) * np.count_nonzero(m))
+    # Drop small disconnected noise specks (< 5% of primary product)
+    n_c, labels_c, stats_c, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if n_c > 2:
+        areas = stats_c[1:, cv2.CC_STAT_AREA]
+        max_a = float(areas.max())
+        keep_labels = [i for i in range(1, n_c) if stats_c[i, cv2.CC_STAT_AREA] >= 0.05 * max_a]
+        m = np.where(np.isin(labels_c, keep_labels), 255, 0).astype(np.uint8)
+    return m
 
 
 def _box_iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -88,6 +96,13 @@ def evaluate_mask(name: str, mask: np.ndarray, reference: np.ndarray) -> MaskRep
         rep.accepted, rep.reason = False, "mask covers almost the whole image (background included)"
     elif rep.border_contact > MAX_BORDER_CONTACT:
         rep.accepted, rep.reason = False, "mask runs along most of the image border (background included)"
+    elif name.startswith("center-grabcut"):
+        if rep.border_contact > 0.10:
+            rep.accepted, rep.reason = False, "center-grabcut touches image border excessively"
+        elif rep.area_ratio < 0.05 or rep.area_ratio > 0.85:
+            rep.accepted, rep.reason = False, f"center-grabcut area ratio ({rep.area_ratio:.3f}) out of bounds"
+        else:
+            rep.accepted = True
     elif rep.coverage < MIN_COVERAGE or rep.box_iou < MIN_BOX_IOU:
         rep.accepted, rep.reason = False, "mask is incomplete: visible parts of the product are missing"
     elif rep.contamination > MAX_CONTAMINATION:
@@ -98,17 +113,29 @@ def evaluate_mask(name: str, mask: np.ndarray, reference: np.ndarray) -> MaskRep
 def choose_mask(
     candidates, reference: np.ndarray, gap_px: int, keep_openings: bool = False
 ) -> tuple[np.ndarray, str, list[MaskReport]]:
-    """Return the first valid candidate (candidates are in preference order) or raise."""
+    """Return the highest quality valid candidate (ranked by components, contamination, coverage) or raise."""
     reference = fill_small_holes(
         reference, hole_ratio(keep_openings) * max(1, np.count_nonzero(reference))
     )
     reports: list[MaskReport] = []
+    valid_candidates: list[tuple[float, np.ndarray, str]] = []
     for cand in candidates:
         cleaned = clean_mask(cand.mask, gap_px, keep_openings)
         rep = evaluate_mask(cand.name, cleaned, reference)
         reports.append(rep)
         if rep.accepted:
-            return cleaned, cand.name, reports
+            n_c, _, _, _ = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
+            num_components = max(1, n_c - 1)
+            comp_penalty = 3.0 * (num_components - 1)
+            pref_bonus = -0.30 if cand.name == "rembg" else (-0.15 if cand.name == "grabcut" else 0.0)
+            score = comp_penalty + 1.5 * rep.contamination + 2.0 * rep.border_contact - 0.5 * rep.box_iou + pref_bonus
+            valid_candidates.append((score, cleaned, cand.name))
+
+    if valid_candidates:
+        valid_candidates.sort(key=lambda x: x[0])
+        best_score, best_mask, best_name = valid_candidates[0]
+        return best_mask, best_name, reports
+
     reasons = "; ".join(f"{r.name}: {r.reason}" for r in reports)
     raise PipelineError(
         "mask_validation",

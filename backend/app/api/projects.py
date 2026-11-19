@@ -54,4 +54,5 @@ def delete_project(project_id: int, db: Session = Depends(get_db), user: User = 
     db.commit()
     storage.delete_tree(f"uploads/{pid}")
     storage.delete_tree(f"generated/{pid}")
+    storage.delete_tree(f"diagnostics/{pid}")
     return Response(status_code=204)

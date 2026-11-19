@@ -111,7 +111,7 @@ def test_upload_process_verify_and_download(client, auth, project, organizer_pho
     res = image["result"]
     assert res["status"] == "Completed" and res["error_message"] is None
     assert image["job"]["job_status"] == "Completed" and image["job"]["completed_at"]
-    assert res["metrics"]["mask_candidate"] in {"grabcut", "foreground-mask"}
+    assert res["metrics"]["mask_candidate"] in {"grabcut", "center-grabcut", "foreground-mask"}
 
     got = {}
     for kind in ("drawing", "svg", "background_removed", "mask", "outline", "original"):
@@ -370,3 +370,25 @@ def test_storage_rejects_path_traversal():
         storage.path("../outside.txt")
     with pytest.raises(ValueError):
         storage.save_bytes("uploads/../../escape.txt", b"x")
+
+
+def test_image_diagnostics_stages_accessible(client, auth, project, organizer_photo):
+    img, _, data = organizer_photo
+    r = upload(client, auth, project["id"], data, "test_diag.png", view="Perspective")
+    iid = r.json()["id"]
+    proc = client.post(f"/ai/process/{iid}", headers=auth)
+    assert proc.status_code == 200
+    diag_res = client.get(f"/images/{iid}/diagnostics", headers=auth)
+    assert diag_res.status_code == 200
+    body = diag_res.json()
+    assert body["image_id"] == iid
+    stages = [s["stage"] for s in body["stages"]]
+    assert "patent_drawing" in stages
+    assert "original_normalized" in stages
+    assert "photo_edges" in stages
+    assert "segmentation_mask" in stages
+
+    stage_res = client.get(f"/images/{iid}/diagnostics/patent_drawing", headers=auth)
+    assert stage_res.status_code == 200
+    assert stage_res.headers["content-type"] == "image/png"
+

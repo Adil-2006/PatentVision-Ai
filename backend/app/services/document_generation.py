@@ -127,8 +127,9 @@ def generate_patent_pdf(
         c.drawCentredString(PAGE_WIDTH / 2.0, 410, view_title)
 
         # 4. Statement of Novelty
+        c.setFont("Times-Bold", 10)
+        c.drawString(LEFT_MARGIN, 375, "Statement of novelty")
         c.setFont("Times-Roman", 10)
-        c.drawString(LEFT_MARGIN, 375, "1. Statement of novelty")
         novelty_lines = wrap_text(novelty_body, max_chars=88)
         y_cursor = 360
         for n_line in novelty_lines:
@@ -137,7 +138,9 @@ def generate_patent_pdf(
 
         # 5. Disclaimer
         y_cursor -= 4
-        c.drawString(LEFT_MARGIN, y_cursor, "2. Disclaimer")
+        c.setFont("Times-Bold", 10)
+        c.drawString(LEFT_MARGIN, y_cursor, "Disclaimer")
+        c.setFont("Times-Roman", 10)
         y_cursor -= 14
         for b_text in disclaimer_bullets:
             bullet_lines = wrap_text(b_text, max_chars=82)

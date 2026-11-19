@@ -49,12 +49,26 @@ function ImageView({ id }: { id: number }) {
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
   const [layer, setLayer] = useState<Layer>("outline");
+  const [diagStages, setDiagStages] = useState<{ stage: string; label: string; url: string }[]>([]);
+  const [activeDiag, setActiveDiag] = useState<string>("original_normalized");
 
   const load = useCallback(() => {
     api.getImage(id).then(setImage).catch(setError);
   }, [id]);
   useEffect(load, [load]);
   usePolling(load, !working && !!image && isActive(image.processing_status), 2000);
+
+  useEffect(() => {
+    if (image?.result) {
+      api.getDiagnostics(id)
+        .then((res) => {
+          if (res.stages?.length) {
+            setDiagStages(res.stages);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [id, image?.result]);
 
   if (!image) {
     return error ? <ErrorBanner error={error} /> : <div className="h-64 animate-pulse rounded-2xl bg-slate-200/60" />;
@@ -289,6 +303,46 @@ function ImageView({ id }: { id: number }) {
             </dl>
           </Card>
         </div>
+      )}
+
+      {diagStages.length > 0 && (
+        <Card
+          title="Diagnostic Mode: 8-Stage Pipeline Inspection"
+          note="Inspect each internal computer vision stage to verify edge isolation, silhouette extraction, and structural fidelity."
+          className="border-blue-200"
+        >
+          <div className="space-y-4 p-4">
+            <div className="flex flex-wrap gap-1.5 rounded-lg bg-slate-100 p-1.5" role="tablist">
+              {diagStages.map((s) => (
+                <button
+                  key={s.stage}
+                  role="tab"
+                  aria-selected={activeDiag === s.stage}
+                  onClick={() => setActiveDiag(s.stage)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                    activeDiag === s.stage
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-slate-700 hover:bg-white hover:text-slate-900"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-col items-center justify-center rounded-xl border border-slate-200 bg-white p-4">
+              <SecureImage
+                src={diagStages.find((s) => s.stage === activeDiag)?.url ?? null}
+                alt={activeDiag}
+                className="max-h-[460px] w-full object-contain"
+                version={version}
+              />
+              <p className="mt-3 text-xs font-semibold text-slate-600">
+                {diagStages.find((s) => s.stage === activeDiag)?.label}
+              </p>
+            </div>
+          </div>
+        </Card>
       )}
     </div>
   );

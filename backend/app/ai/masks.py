@@ -43,15 +43,36 @@ def select_product_components(mask: np.ndarray, gap_px: int, min_group_ratio: fl
     if not mask.any():
         return mask
     closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ellipse(gap_px))
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(closed, connectivity=8)
     if n <= 1:
         return mask
+    h, w = mask.shape
+    cx_img, cy_img = w / 2.0, h / 2.0
     areas = stats[1:, cv2.CC_STAT_AREA]
-    main = 1 + int(np.argmax(areas))
+    max_area = float(areas.max())
+
+    best_idx = 1
+    best_score = float("inf")
+    for i in range(1, n):
+        x0, y0 = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+        bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        area = float(stats[i, cv2.CC_STAT_AREA])
+        if area < 0.15 * max_area:
+            continue
+        cx, cy = centroids[i]
+        dist_to_center = np.hypot(cx - cx_img, cy - cy_img) / max(1.0, np.hypot(cx_img, cy_img))
+        touches_border = (x0 <= 2) or (y0 <= 2) or (x0 + bw >= w - 2) or (y0 + bh >= h - 2)
+        border_penalty = 2.0 if touches_border else 0.0
+        score = dist_to_center + border_penalty - 0.5 * (area / max_area)
+        if score < best_score:
+            best_score = score
+            best_idx = i
+
+    main = best_idx
     mx0, my0 = stats[main, cv2.CC_STAT_LEFT], stats[main, cv2.CC_STAT_TOP]
     mx1, my1 = mx0 + stats[main, cv2.CC_STAT_WIDTH], my0 + stats[main, cv2.CC_STAT_HEIGHT]
     diag = float(np.hypot(*mask.shape))
-    max_dist = 0.10 * diag
+    max_dist = 0.08 * diag
 
     keep = np.zeros(n, dtype=bool)
     keep[main] = True

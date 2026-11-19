@@ -15,10 +15,11 @@ MIN_HOLE_RATIO = 0.01
 class ContourSet:
     outer: list[np.ndarray] = field(default_factory=list)  # each (N, 2) float32, x/y pixels
     holes: list[np.ndarray] = field(default_factory=list)  # genuine see-through openings
+    internal: list[np.ndarray] = field(default_factory=list)  # internal structural seams, grooves, ribs, joints
 
     @property
     def all(self) -> list[np.ndarray]:
-        return self.outer + self.holes
+        return self.outer + self.holes + self.internal
 
     @property
     def point_count(self) -> int:
@@ -99,8 +100,12 @@ def extract_contours(mask: np.ndarray, smooth: bool = True, keep_openings: bool 
             x, y, w, h = cv2.boundingRect(found[i].astype(np.int32))
             cx = x + w / 2.0
             touches_lateral = (x <= 1 or x + w >= w_img - 1)
+            touches_vertical = (y <= 1 or y + h >= h_img - 1)
             is_far_lateral = abs(cx - lcx) > 0.30 * w_img
+            is_small = areas[i] < 0.08 * largest
             if touches_lateral and is_far_lateral:
+                continue
+            if touches_vertical and is_small:
                 continue
             filtered.append(i)
         if filtered:

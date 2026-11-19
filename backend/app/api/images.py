@@ -259,6 +259,55 @@ def download_original(
     )
 
 
+@router.get("/images/{image_id}/diagnostics")
+def list_diagnostics(
+    image_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    image = get_owned_image(db, user, image_id)
+    stages = [
+        {"stage": "original_normalized", "label": "1. Normalized Photograph"},
+        {"stage": "segmentation_mask", "label": "2. Solid Segmentation Mask"},
+        {"stage": "photo_edges", "label": "3. Photographic Edges (CLAHE + Canny)"},
+        {"stage": "internal_edges", "label": "4. Internal Structural Details"},
+        {"stage": "external_silhouette", "label": "5. External Product Silhouette"},
+        {"stage": "combined_edges", "label": "6. Combined Technical Edges"},
+        {"stage": "cleaned_contours", "label": "7. Cleaned Contours"},
+        {"stage": "patent_drawing", "label": "8. Final Patent Illustration"},
+    ]
+    available = []
+    prefix = f"diagnostics/{image.project_id}/{image.id}"
+    for s in stages:
+        key = f"{prefix}/{s['stage']}.png"
+        if storage.exists(key):
+            available.append(
+                {
+                    "stage": s["stage"],
+                    "label": s["label"],
+                    "url": f"/images/{image.id}/diagnostics/{s['stage']}",
+                }
+            )
+    return {"image_id": image.id, "stages": available}
+
+
+@router.get("/images/{image_id}/diagnostics/{stage_name}")
+def download_diagnostic(
+    image_id: int,
+    stage_name: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    image = get_owned_image(db, user, image_id)
+    key = f"diagnostics/{image.project_id}/{image.id}/{stage_name}.png"
+    if not storage.exists(key):
+        raise ApiError(
+            404,
+            "diagnostic_not_found",
+            f"Diagnostic stage '{stage_name}' was not found for this image.",
+            "Process or reprocess the image first.",
+        )
+    return file_response(key, "image/png", None, "Reprocess the image.")
+
+
 @router.delete("/images/{image_id}", status_code=204)
 def delete_image(image_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     image = get_owned_image(db, user, image_id)
@@ -269,4 +318,5 @@ def delete_image(image_id: int, db: Session = Depends(get_db), user: User = Depe
     db.commit()
     storage.delete(key)
     storage.delete_tree(f"generated/{pid}/{iid}")
+    storage.delete_tree(f"diagnostics/{pid}/{iid}")
     return Response(status_code=204)

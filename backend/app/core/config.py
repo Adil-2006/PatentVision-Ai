@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     max_image_pixels: int = 40_000_000
     processing_max_side: int = 1600
 
+    background_remover: str = "auto"  # auto | rembg | classical
     segmenter: str = "classical"  # classical | sam
     sam_checkpoint: str | None = None
     sam_model_type: str = "vit_b"

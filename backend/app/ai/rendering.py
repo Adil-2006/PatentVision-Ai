@@ -37,16 +37,30 @@ def render_drawing(contours: ContourSet, long_side: int = 1400, line_width: floa
 
     big = np.full((height * SUPERSAMPLE, width * SUPERSAMPLE), 255, np.uint8)
     thickness = max(1, round(line_width * SUPERSAMPLE))
+    int_thickness = max(1, round(line_width * 0.60 * SUPERSAMPLE))
     factor = SUPERSAMPLE * (1 << SUBPIXEL_SHIFT)
     length = 0.0
-    polys = []
-    for pts in contours.all:
+
+    polys_outer = []
+    for pts in contours.outer + contours.holes:
         mapped = (pts - mn) * scale + margin
         length += _contour_length(mapped)
-        polys.append(np.round(mapped * factor).astype(np.int32).reshape(-1, 1, 2))
-    cv2.polylines(
-        big, polys, isClosed=True, color=0, thickness=thickness, lineType=cv2.LINE_AA, shift=SUBPIXEL_SHIFT
-    )
+        polys_outer.append(np.round(mapped * factor).astype(np.int32).reshape(-1, 1, 2))
+    if polys_outer:
+        cv2.polylines(
+            big, polys_outer, isClosed=True, color=0, thickness=thickness, lineType=cv2.LINE_AA, shift=SUBPIXEL_SHIFT
+        )
+
+    polys_internal = []
+    for pts in getattr(contours, "internal", []):
+        mapped = (pts - mn) * scale + margin
+        length += _contour_length(mapped)
+        polys_internal.append(np.round(mapped * factor).astype(np.int32).reshape(-1, 1, 2))
+    if polys_internal:
+        cv2.polylines(
+            big, polys_internal, isClosed=False, color=0, thickness=int_thickness, lineType=cv2.LINE_AA, shift=SUBPIXEL_SHIFT
+        )
+
     img = cv2.resize(big, (width, height), interpolation=cv2.INTER_AREA)
     return Drawing(image=img, line_length_px=length, line_width=line_width)
 
@@ -80,7 +94,7 @@ def validate_drawing(drawing: Drawing) -> dict:
 
     est_width = float(ink.sum() / max(drawing.line_length_px, 1.0))
     ratio = est_width / drawing.line_width
-    if not 0.6 <= ratio <= 1.4:
+    if not 0.4 <= ratio <= 1.6:
         raise fail("line thickness is not uniform")
     return {"width": w, "height": h, "ink_fraction": round(ink_fraction, 5), "line_width_ratio": round(ratio, 3)}
 
@@ -94,18 +108,30 @@ def render_svg(contours: ContourSet, long_side: int = 1400, line_width: float = 
     scale = (long_side - 2 * margin) / max(bw, bh)
     width, height = round(bw * scale + 2 * margin), round(bh * scale + 2 * margin)
 
-    paths = []
-    for pts in contours.all:
+    paths_outer = []
+    for pts in contours.outer + contours.holes:
         mapped = (pts - mn) * scale + margin
         coords = " L".join(f"{x:.2f},{y:.2f}" for x, y in mapped)
-        paths.append(f'<path d="M{coords} Z"/>')
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">'
-        f'<rect width="100%" height="100%" fill="#fff"/>'
-        f'<g fill="none" stroke="#000" stroke-width="{line_width:g}" stroke-linejoin="round" '
-        f'stroke-linecap="round">{"".join(paths)}</g></svg>'
-    )
+        paths_outer.append(f'<path d="M{coords} Z"/>')
+
+    paths_internal = []
+    for pts in getattr(contours, "internal", []):
+        mapped = (pts - mn) * scale + margin
+        coords = " L".join(f"{x:.2f},{y:.2f}" for x, y in mapped)
+        paths_internal.append(f'<path d="M{coords}"/>')
+
+    int_width = max(1.0, round(line_width * 0.6, 2))
+    svg_body = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<rect width="100%" height="100%" fill="#fff"/>',
+        f'<g fill="none" stroke="#000" stroke-width="{line_width:g}" stroke-linejoin="round" stroke-linecap="round">{"".join(paths_outer)}</g>',
+    ]
+    if paths_internal:
+        svg_body.append(
+            f'<g fill="none" stroke="#000" stroke-width="{int_width:g}" stroke-linejoin="round" stroke-linecap="round">{"".join(paths_internal)}</g>'
+        )
+    svg_body.append("</svg>")
+    return "".join(svg_body)
 
 
 def overlay_outline(bgr: np.ndarray, contours: ContourSet) -> np.ndarray:

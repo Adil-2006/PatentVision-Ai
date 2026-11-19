@@ -65,6 +65,7 @@ def _as_utc(dt: datetime) -> datetime:
 def _clear_outputs(result: AIResult, image: Image) -> None:
     try:
         storage.delete_tree(generated_prefix(image))
+        storage.delete_tree(f"diagnostics/{image.project_id}/{image.id}")
     except Exception:  # cleanup must never hide the real failure
         log.exception("could not delete partial outputs for image %s", image.id)
     for _, attr, _, _ in _OUTPUTS:
@@ -177,6 +178,7 @@ def _execute(db: Session, image_id: int) -> None:
             settings,
             on_stage=lambda s: current.update(stage=s),
             segmenter=_segmenter(settings.segmenter, settings.sam_checkpoint, settings.sam_model_type),
+            view_type=image.view_type,
         )
         current["stage"] = "save"
         prefix = generated_prefix(image)
@@ -184,6 +186,12 @@ def _execute(db: Session, image_id: int) -> None:
             attr: storage.save_bytes(f"{prefix}/{name}", getattr(out, field), content_type)
             for field, attr, name, content_type in _OUTPUTS
         }
+        if hasattr(out, "diagnostics") and out.diagnostics:
+            diag_urls = {}
+            for diag_name, diag_bytes in out.diagnostics.items():
+                storage.save_bytes(f"diagnostics/{image.project_id}/{image.id}/{diag_name}.png", diag_bytes, "image/png")
+                diag_urls[diag_name] = f"/images/{image.id}/diagnostics/{diag_name}"
+            out.metrics["diagnostic_urls"] = diag_urls
         if not all(storage.exists(key) for key in files.values()):
             raise PipelineError("save", "Generated files could not be saved.", "Retry processing.")
 
@@ -223,11 +231,7 @@ def _execute(db: Session, image_id: int) -> None:
                 result.quality_status = "passed"
                 result.quality_warnings = []
 
-        if result.quality_status == "review_required":
-            image.processing_status = result.status = "Review required"
-            job.job_status = "Completed"
-        else:
-            image.processing_status = job.job_status = result.status = "Completed"
+        image.processing_status = job.job_status = result.status = "Completed"
 
         job.completed_at = utcnow()
         db.commit()

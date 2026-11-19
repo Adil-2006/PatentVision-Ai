@@ -12,6 +12,7 @@ os.environ["PV_SECRET_KEY"] = "test-secret-key"
 os.environ["PV_RATE_LIMIT_PER_MINUTE"] = "1000"
 os.environ["PV_AUTO_CREATE_TABLES"] = "false"
 os.environ["PV_STORAGE_BACKEND"] = "local"
+os.environ["PV_BACKGROUND_REMOVER"] = "classical"
 os.environ.pop("VERCEL", None)
 
 import pytest  # noqa: E402

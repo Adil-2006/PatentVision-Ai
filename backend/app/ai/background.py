@@ -74,6 +74,79 @@ class ClassicalBackgroundRemover:
         return mask
 
 
+class RembgBackgroundRemover:
+    """U-2-Net based AI background removal matching Google Colab prototype."""
+
+    def __init__(self, session=None):
+        self._session = session
+
+    def _get_session(self):
+        if self._session is None:
+            import os
+            from pathlib import Path
+            import rembg
+
+            models_dir = Path(__file__).resolve().parent.parent.parent / "models"
+            if (models_dir / "u2net.onnx").is_file():
+                os.environ["U2NET_HOME"] = str(models_dir)
+            self._session = rembg.new_session("u2net")
+        return self._session
+
+    def remove(self, bgr: np.ndarray, prior_mask: np.ndarray | None = None) -> np.ndarray:
+        if prior_mask is not None:
+            return to_binary(prior_mask)
+        try:
+            import rembg
+
+            session = self._get_session()
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            output = rembg.remove(rgb, session=session)
+            alpha = output[:, :, 3]
+            _, binary_mask = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
+
+            # Keep primary components and drop small stray noise blobs (< 5% of primary)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                binary_mask, connectivity=8
+            )
+            if num_labels > 2:
+                max_area = float(stats[1:, cv2.CC_STAT_AREA].max())
+                keep = [
+                    i
+                    for i in range(1, num_labels)
+                    if stats[i, cv2.CC_STAT_AREA] >= 0.05 * max_area
+                ]
+                clean_m = np.zeros_like(binary_mask)
+                clean_m[np.isin(labels, keep)] = 255
+                binary_mask = clean_m
+
+            if not binary_mask.any():
+                raise PipelineError("background_removal", "No foreground detected by rembg.")
+            return binary_mask
+        except Exception:
+            # Seamless fallback to classical border-colour + Otsu GrabCut
+            fallback = ClassicalBackgroundRemover()
+            return fallback.remove(bgr, prior_mask)
+
+
+def get_background_remover(kind: str = "auto") -> BackgroundRemover:
+    if kind == "classical":
+        return ClassicalBackgroundRemover()
+    if kind == "rembg":
+        return RembgBackgroundRemover()
+    from pathlib import Path
+
+    models_dir = Path(__file__).resolve().parent.parent.parent / "models"
+    if (models_dir / "u2net.onnx").is_file():
+        try:
+            import rembg  # noqa: F401
+
+            return RembgBackgroundRemover()
+        except ImportError:
+            pass
+    return ClassicalBackgroundRemover()
+
+
+
 def cutout_rgba(bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Background-removed image: product pixels with the mask as alpha (transparent background)."""
     b, g, r = cv2.split(bgr)

@@ -49,3 +49,18 @@ def test_clean_single_object_passes_quality_checks():
     out = run_pipeline(data, get_settings())
     assert out.metrics["quality_status"] == "passed"
     assert len(out.metrics["quality_warnings"]) == 0
+
+
+def test_rembg_background_remover_initialization_and_fallback():
+    """Verify that RembgBackgroundRemover initializes properly and falls back gracefully."""
+    from app.ai.background import RembgBackgroundRemover, get_background_remover
+
+    remover = get_background_remover("rembg")
+    assert isinstance(remover, RembgBackgroundRemover)
+
+    # Test on a small synthetic image
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cv2.circle(img, (50, 50), 30, (0, 0, 0), -1)
+    mask = remover.remove(img)
+    assert mask.shape == (100, 100)
+    assert mask.dtype == np.uint8
