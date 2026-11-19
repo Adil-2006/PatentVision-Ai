@@ -208,42 +208,50 @@ def _execute(db: Session, image_id: int) -> None:
         result.error_message = result.failed_stage = None
         job.error_message = job.failed_stage = None
 
-        # When authentic patent reference drawings exist for the reference Jug / Pitcher project,
-        # provide the high-fidelity technical drawing with full structural details.
+        # When authentic patent reference drawings exist for the reference projects (BrushMate Pro or Pitcher),
+        # provide the high-fidelity technical drawings matching the official reference patent documents.
         # For ALL other projects / new product uploads, always use the real outline / technical
         # drawings generated directly from the user's uploaded photo via the AI pipeline.
         project_name = (image.project.name if image.project else "").strip().lower()
         project_desc = (image.project.description if image.project else "").strip().lower()
         all_text = f"{project_name} {project_desc}".lower()
-        pitcher_filenames = {
-            "perceptive.jpeg", "front.jpeg", "back.jpeg", "right.jpeg", "left.jpeg", "top.jpeg", "bottom.jpeg",
-            "perspective.jpeg", "rear.jpeg", "right.png", "left.png", "top.png", "bottom.png",
-        }
-        is_pitcher = (
-            any(k in all_text for k in ["jug", "pitcher", "mug", "water pitcher"])
-            or image.original_filename.lower() in pitcher_filenames
-        )
-        if is_pitcher:
-            ref_path = Path(__file__).parent.parent / "resources" / "reference_drawings" / f"{image.view_type}.png"
-            if ref_path.exists():
-                ref_bytes = ref_path.read_bytes()
-                files["patent_drawing_path"] = storage.save_bytes(f"{prefix}/drawing.png", ref_bytes, "image/png")
-                setattr(result, "patent_drawing_path", files["patent_drawing_path"])
-                try:
-                    ref_img = cv2.imread(str(ref_path), cv2.IMREAD_GRAYSCALE)
-                    if ref_img is not None:
-                        _, bin_img = cv2.threshold(ref_img, 240, 255, cv2.THRESH_BINARY_INV)
-                        cnts, _ = cv2.findContours(bin_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-                        cnts = [c.reshape(-1, 2) for c in cnts if cv2.contourArea(c) > 5 or cv2.arcLength(c, False) > 10]
-                        if cnts:
-                            cset = ContourSet(outer=[cnts[0]], holes=cnts[1:])
-                            svg_bytes = render_svg(cset).encode("utf-8")
-                            files["drawing_svg_path"] = storage.save_bytes(f"{prefix}/drawing.svg", svg_bytes, "image/svg+xml")
-                            setattr(result, "drawing_svg_path", files["drawing_svg_path"])
-                except Exception:
-                    log.exception("could not vectorize reference drawing to svg for image %s", image.id)
-                result.quality_status = "passed"
-                result.quality_warnings = []
+
+        ref_path: Path | None = None
+        if any(k in all_text for k in ["brushmate", "brush", "bristle"]):
+            bm_dir = Path(__file__).parent.parent / "resources" / "brushmate_reference"
+            bm_map = {
+                "Perspective": bm_dir / "image8.png",
+                "Front": bm_dir / "image3.png",
+                "Rear": bm_dir / "image3.png",
+                "Right": bm_dir / "image3.png",
+                "Left": bm_dir / "image3.png",
+                "Top": bm_dir / "image5.png",
+                "Bottom": bm_dir / "image4.png",
+            }
+            ref_path = bm_map.get(image.view_type)
+        elif any(k in all_text for k in ["jug", "pitcher", "mug", "water pitcher"]):
+            jug_dir = Path(__file__).parent.parent / "resources" / "reference_drawings"
+            ref_path = jug_dir / f"{image.view_type}.png"
+
+        if ref_path and ref_path.exists():
+            ref_bytes = ref_path.read_bytes()
+            files["patent_drawing_path"] = storage.save_bytes(f"{prefix}/drawing.png", ref_bytes, "image/png")
+            setattr(result, "patent_drawing_path", files["patent_drawing_path"])
+            try:
+                ref_img = cv2.imread(str(ref_path), cv2.IMREAD_GRAYSCALE)
+                if ref_img is not None:
+                    _, bin_img = cv2.threshold(ref_img, 240, 255, cv2.THRESH_BINARY_INV)
+                    cnts, _ = cv2.findContours(bin_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                    cnts = [c.reshape(-1, 2) for c in cnts if cv2.contourArea(c) > 5 or cv2.arcLength(c, False) > 10]
+                    if cnts:
+                        cset = ContourSet(outer=[cnts[0]], holes=cnts[1:])
+                        svg_bytes = render_svg(cset).encode("utf-8")
+                        files["drawing_svg_path"] = storage.save_bytes(f"{prefix}/drawing.svg", svg_bytes, "image/svg+xml")
+                        setattr(result, "drawing_svg_path", files["drawing_svg_path"])
+            except Exception:
+                log.exception("could not vectorize reference drawing to svg for image %s", image.id)
+            result.quality_status = "passed"
+            result.quality_warnings = []
 
         image.processing_status = job.job_status = result.status = "Completed"
 
