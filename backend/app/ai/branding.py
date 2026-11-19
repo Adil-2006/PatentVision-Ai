@@ -122,7 +122,7 @@ def detect_branding_regions(bgr: np.ndarray, mask: np.ndarray) -> list[BrandingR
             local_grad = grad_mag[y : y + bh, x : x + bw]
             high_edges = np.count_nonzero(local_grad > 35)
             edge_ratio = high_edges / float(box_area)
-            if edge_ratio > 0.12:
+            if edge_ratio > 0.20:
                 conf = float(np.clip(edge_ratio * 1.5, 0.4, 0.95))
                 detected.append(
                     BrandingRegion(
@@ -131,30 +131,6 @@ def detect_branding_regions(bgr: np.ndarray, mask: np.ndarray) -> list[BrandingR
                         description=f"Surface text/logo candidate at ({int(x)},{int(y)})",
                     )
                 )
-
-    # High-gradient text detection via internal edge grouping (Canny + horizontal connect)
-    int_canny = cv2.bitwise_and(cv2.Canny(gray, 30, 80), cv2.Canny(gray, 30, 80), mask=eroded_mask)
-    mid_canny = np.zeros_like(int_canny)
-    y_top_limit = int(h * 0.20)
-    y_bot_limit = int(h * 0.56)
-    mid_canny[y_top_limit:y_bot_limit, :] = int_canny[y_top_limit:y_bot_limit, :]
-    dil_canny = cv2.dilate(mid_canny, cv2.getStructuringElement(cv2.MORPH_RECT, (16, 4)))
-    n_tc, _, stats_tc, _ = cv2.connectedComponentsWithStats(dil_canny, connectivity=8)
-    for i in range(1, n_tc):
-        tx, ty, tbw, tbh, tarea = stats_tc[i]
-        if 40 <= tbw <= int(0.75 * w) and 10 <= tbh <= 380 and tarea >= 80:
-            pad = 8
-            bx = max(0, tx - pad)
-            by = max(0, ty - pad)
-            bw_p = min(w - bx, tbw + 2 * pad)
-            bh_p = min(h - by, tbh + 2 * pad)
-            detected.append(
-                BrandingRegion(
-                    bbox=(int(bx), int(by), int(bw_p), int(bh_p)),
-                    confidence=0.92,
-                    description=f"Surface text block candidate at ({int(bx)},{int(by)})",
-                )
-            )
 
     return detected
 
@@ -172,6 +148,8 @@ def clean_branding_and_text(
     if not branding_regions:
         return contours, warnings
 
+    h, w = mask_shape[:2]
+
     # Identify any inner holes or openings that fall within a branding region
     filtered_holes = []
     removed_count = 0
@@ -180,6 +158,8 @@ def clean_branding_and_text(
         hcx, hcy = hx + hw / 2.0, hy + hh / 2.0
         is_branding_hole = False
         for reg in branding_regions:
+            if reg.confidence < 0.70:
+                continue
             rx, ry, rw, rh = reg.bbox
             if rx - 5 <= hcx <= rx + rw + 5 and ry - 5 <= hcy <= ry + rh + 5:
                 is_branding_hole = True
@@ -189,14 +169,24 @@ def clean_branding_and_text(
         else:
             filtered_holes.append(h_pts)
 
-    # Filter internal lines that fall within a branding region
+    # Filter internal lines that fall within a branding region while preserving structural joints
     filtered_internal = []
     for line_pts in contours.internal:
         lx, ly, lw, lh = cv2.boundingRect(line_pts.astype(np.int32))
         lcx, lcy = lx + lw / 2.0, ly + lh / 2.0
+        # Continuous structural lines spanning across product or large features are never branding
+        if lw > 0.20 * w or lh > 0.20 * h:
+            filtered_internal.append(line_pts)
+            continue
+
         is_branding = False
         for reg in branding_regions:
+            if reg.confidence < 0.70:
+                continue
             rx, ry, rw, rh = reg.bbox
+            # If the line spans across most of the candidate box, it is a structural boundary
+            if lw > 0.85 * rw or lh > 0.85 * rh:
+                continue
             if rx - 2 <= lcx <= rx + rw + 2 and ry - 2 <= lcy <= ry + rh + 2:
                 is_branding = True
                 break

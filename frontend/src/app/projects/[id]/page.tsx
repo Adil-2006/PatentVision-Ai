@@ -80,6 +80,10 @@ function ProjectView({ id }: { id: number }) {
   const [downloadingDocId, setDownloadingDocId] = useState<number | null>(null);
   const [savingMeta, setSavingMeta] = useState(false);
   const [sigUploading, setSigUploading] = useState(false);
+  const [productDescInput, setProductDescInput] = useState<string>("");
+  const [descDirty, setDescDirty] = useState(false);
+  const [savingDesc, setSavingDesc] = useState(false);
+  const [descSavedToast, setDescSavedToast] = useState(false);
 
   const signatureInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,6 +115,38 @@ function ProjectView({ id }: { id: number }) {
   }, [id]);
 
   useEffect(load, [load]);
+
+  useEffect(() => {
+    if (project && !descDirty) {
+      setProductDescInput(project.description || "");
+    }
+  }, [project, descDirty]);
+
+  async function handleSaveDescription() {
+    setSavingDesc(true);
+    try {
+      const updated = await api.updateProject(id, { description: productDescInput });
+      setProject(updated);
+      setDescDirty(false);
+      setDescSavedToast(true);
+      setTimeout(() => setDescSavedToast(false), 3000);
+      toast("success", "Product features saved to guide AI patent pipeline.");
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSavingDesc(false);
+    }
+  }
+
+  function handleAddFeaturePill(pill: string) {
+    setDescDirty(true);
+    setProductDescInput((prev) => {
+      const trimmed = prev.trim();
+      if (!trimmed) return pill;
+      if (trimmed.toLowerCase().includes(pill.toLowerCase())) return prev;
+      return `${trimmed}, ${pill}`;
+    });
+  }
 
   useEffect(() => {
     api.meta().then((m) => setMaxBytes(m.max_upload_bytes)).catch(() => {});
@@ -466,6 +502,109 @@ function ProjectView({ id }: { id: number }) {
           </div>
         )}
       </div>
+
+      {/* Product Description & AI Feature Guidance Card */}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-900">
+                Product Description &amp; Technical Feature Guidance
+              </h2>
+              <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+                AI Vision Guided
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Specify your product&apos;s structural components to guide PatentVision AI&apos;s precision technical drawing engine. The vision model uses your description to reconstruct clean, publication-grade patent illustrations (including lid seams, knobs, handles, latch tabs, and filter meshes).
+            </p>
+          </div>
+          {descSavedToast && (
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+              Features saved &amp; active
+            </span>
+          )}
+        </div>
+
+        {/* Feature Pills */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-medium text-slate-600 mr-1">Quick-add features:</span>
+          {[
+            "Removable Lid",
+            "Top Knob with Neck Stalk",
+            "Ergonomic Handle",
+            "Latch Tabs",
+            "Mesh Filter Bottom",
+            "Bristle Matrix Base",
+            "Cylindrical Body",
+            "Spout Channel",
+          ].map((pill) => {
+            const active = productDescInput.toLowerCase().includes(pill.toLowerCase());
+            return (
+              <button
+                key={pill}
+                type="button"
+                onClick={() => handleAddFeaturePill(pill)}
+                className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                  active
+                    ? "bg-blue-100 font-medium text-blue-800 ring-1 ring-blue-300"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900"
+                }`}
+              >
+                {active ? "✓ " : "+ "}
+                {pill}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Textarea */}
+        <div className="mt-3">
+          <textarea
+            rows={2}
+            value={productDescInput}
+            onChange={(e) => {
+              setProductDescInput(e.target.value);
+              setDescDirty(true);
+            }}
+            placeholder="e.g. Water pitcher with removable lid, rounded top knob with neck stalk, ergonomic handle, latch tabs, and mesh filter bottom..."
+            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+
+        {/* Action row */}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-slate-400">
+            Tip: Include features like &quot;knob&quot;, &quot;lid&quot;, &quot;handle&quot;, &quot;mesh&quot;, or &quot;bristles&quot; to activate specialized CAD contour extraction.
+          </p>
+          <div className="flex items-center gap-2">
+            {uploadedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const uploaded = Object.values(views).filter((v): v is ImageItem => v !== null);
+                  runBatch(uploaded);
+                }}
+                disabled={busy.size > 0 || batch !== null}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+              >
+                Reprocess All Views with Features
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveDescription}
+              disabled={savingDesc || (!descDirty && Boolean(project?.description === productDescInput))}
+              className="rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-40"
+            >
+              {savingDesc ? "Saving..." : "Save Feature Guidance"}
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* Multi-Photo Session Upload */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

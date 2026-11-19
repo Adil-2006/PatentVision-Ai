@@ -25,7 +25,10 @@ def _contour_length(pts: np.ndarray) -> float:
 
 def render_drawing(contours: ContourSet, long_side: int = 1400, line_width: float = 4.0) -> Drawing:
     """White canvas, uniform black anti-aliased outline, whole object visible with margins."""
-    allpts = np.concatenate(contours.outer)
+    draw_pts = contours.outer + contours.holes + [p for p in getattr(contours, "internal", []) if len(p)]
+    if not draw_pts:
+        raise PipelineError("rendering", "The extracted contour is degenerate.")
+    allpts = np.concatenate(draw_pts)
     mn, mx = allpts.min(axis=0), allpts.max(axis=0)
     bw, bh = float(mx[0] - mn[0]), float(mx[1] - mn[1])
     if bw < 2 or bh < 2:
@@ -101,7 +104,10 @@ def validate_drawing(drawing: Drawing) -> dict:
 
 def render_svg(contours: ContourSet, long_side: int = 1400, line_width: float = 4.0) -> str:
     """Vector version of the drawing: same framing and stroke as render_drawing, as SVG paths."""
-    allpts = np.concatenate(contours.outer)
+    draw_pts = contours.outer + contours.holes + [p for p in getattr(contours, "internal", []) if len(p)]
+    if not draw_pts:
+        raise PipelineError("rendering", "The extracted contour is degenerate.")
+    allpts = np.concatenate(draw_pts)
     mn, mx = allpts.min(axis=0), allpts.max(axis=0)
     bw, bh = float(mx[0] - mn[0]), float(mx[1] - mn[1])
     margin = MARGIN_RATIO * long_side

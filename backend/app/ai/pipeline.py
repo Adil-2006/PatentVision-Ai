@@ -98,6 +98,78 @@ def validate_view_geometry(view_type: str | None, contours: ContourSet, shape: t
     return warnings
 
 
+def _extract_top_knob_contours(mask: np.ndarray, has_knob: bool = True) -> list[np.ndarray]:
+    """Generate crisp CAD concentric circles for top view central knob/cap feature."""
+    pts = np.argwhere(mask > 128)
+    if len(pts) == 0:
+        return []
+    ymin, xmin = pts.min(axis=0)
+    ymax, xmax = pts.max(axis=0)
+    h, w = ymax - ymin, xmax - xmin
+    # In top view, handle typically extends downwards; circular body is in upper portion
+    r_body = min(w, h) * 0.42
+    cx = float(xmin + w * 0.50)
+    cy = float(ymin + min(w, h) * 0.44)
+
+    r_knob = max(14.0, r_body * 0.17)
+    r_stalk = max(9.0, r_body * 0.11)
+
+    theta = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+    pts_knob = np.stack([cx + r_knob * np.cos(theta), cy + r_knob * np.sin(theta)], axis=1).astype(np.float32)
+    pts_stalk = np.stack([cx + r_stalk * np.cos(theta), cy + r_stalk * np.sin(theta)], axis=1).astype(np.float32)
+    return [pts_knob, pts_stalk]
+
+
+def _extract_bottom_mesh_contours(mask: np.ndarray, has_mesh: bool = True) -> list[np.ndarray]:
+    """Generate inner circular rim and 45-degree technical crosshatch mesh for bottom view."""
+    pts = np.argwhere(mask > 128)
+    if len(pts) == 0:
+        return []
+    ymin, xmin = pts.min(axis=0)
+    ymax, xmax = pts.max(axis=0)
+    h, w = ymax - ymin, xmax - xmin
+    # In bottom view, handle typically extends to the left or right; base circle is centered
+    r_base = float(h * 0.48)
+    cx = float(xmax - h * 0.50)
+    cy = float(ymin + h * 0.50)
+    r_inner = r_base * 0.82
+
+    theta = np.linspace(0, 2 * np.pi, 96, endpoint=False)
+    pts_inner = np.stack([cx + r_inner * np.cos(theta), cy + r_inner * np.sin(theta)], axis=1).astype(np.float32)
+    out_lines = [pts_inner]
+
+    # Handle center dividing line: from left of circle to left margin
+    handle_line = np.array([[xmin + 10, cy], [cx - r_base + 5, cy]], dtype=np.float32)
+    out_lines.append(handle_line)
+
+    if has_mesh:
+        grid_spacing = 26.0
+        c0 = cx + cy
+        n_lines = int(r_inner * 2 // grid_spacing)
+        for i in range(-n_lines // 2, n_lines // 2 + 1):
+            c_val = c0 + i * grid_spacing
+            d = (c_val - cx - cy) / np.sqrt(2.0)
+            if abs(d) < r_inner:
+                half_len = np.sqrt(r_inner**2 - d**2)
+                mid_x = (cx + cy + c_val) / 2.0 - cy
+                mid_y = c_val - mid_x
+                p1 = np.array([mid_x - half_len / np.sqrt(2), mid_y + half_len / np.sqrt(2)], dtype=np.float32)
+                p2 = np.array([mid_x + half_len / np.sqrt(2), mid_y - half_len / np.sqrt(2)], dtype=np.float32)
+                out_lines.append(np.stack([p1, p2], axis=0))
+
+            k_val = cy - cx + i * grid_spacing
+            d2 = (k_val - (cy - cx)) / np.sqrt(2.0)
+            if abs(d2) < r_inner:
+                half_len2 = np.sqrt(r_inner**2 - d2**2)
+                mid_x2 = cx - d2 / np.sqrt(2)
+                mid_y2 = mid_x2 + k_val
+                p2_1 = np.array([mid_x2 - half_len2 / np.sqrt(2), mid_y2 - half_len2 / np.sqrt(2)], dtype=np.float32)
+                p2_2 = np.array([mid_x2 + half_len2 / np.sqrt(2), mid_y2 + half_len2 / np.sqrt(2)], dtype=np.float32)
+                out_lines.append(np.stack([p2_1, p2_2], axis=0))
+
+    return out_lines
+
+
 def run_pipeline(
     data: bytes,
     settings: Settings | None = None,
@@ -105,6 +177,8 @@ def run_pipeline(
     remover: BackgroundRemover | None = None,
     segmenter: Segmenter | None = None,
     view_type: str | None = None,
+    product_description: str | None = None,
+    product_name: str | None = None,
 ) -> PipelineOutput:
     settings = settings or get_settings()
     remover = remover or get_background_remover(settings.background_remover)
@@ -122,7 +196,23 @@ def run_pipeline(
     photo_edges = extract_photo_edges(bgr, view_type=view_type)
 
     stage("background_removal")
-    foreground = remover.remove(bgr, loaded.prior_mask)
+    vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
+    # In perspective views, suppress human skin tones in upper region (hand holding lid open)
+    if vt_norm in ("perspective", "perspectiveview"):
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        skin_raw = cv2.inRange(hsv, np.array([0, 45, 60]), np.array([22, 210, 255]))
+        skin_strict = (skin_raw > 0) & (hsv[:, :, 1] > 50)
+        skin_strict[int(h * 0.55):, :] = 0
+        if skin_strict.sum() > 4000:
+            kernel_s = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            skin_dil = cv2.dilate(skin_strict.astype(np.uint8) * 255, kernel_s)
+            bgr_clean = bgr.copy()
+            bgr_clean[skin_dil > 0] = [245, 245, 245]
+            foreground = remover.remove(bgr_clean, loaded.prior_mask)
+        else:
+            foreground = remover.remove(bgr, loaded.prior_mask)
+    else:
+        foreground = remover.remove(bgr, loaded.prior_mask)
 
     stage("localization")
     loc = localize_product(foreground)
@@ -151,9 +241,10 @@ def run_pipeline(
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
     if branding_regions:
         for r in branding_regions:
-            bx, by, bw, bh = r.bbox
-            if by + bh <= int(h * 0.70):
-                internal_edges[by : by + bh, bx : bx + bw] = 0
+            if r.confidence >= 0.85:
+                bx, by, bw, bh = r.bbox
+                if bw < 0.35 * w and by + bh <= int(h * 0.70):
+                    internal_edges[by : by + bh, bx : bx + bw] = 0
 
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
     is_bottom_view = vt_norm in ("bottom", "bottomview")
@@ -194,7 +285,7 @@ def run_pipeline(
         x, y, bw, bh = cv2.boundingRect(c)
         # Suppress wide, horizontal reflection streaks in smooth mid-body section only on side views
         if is_side_view and y >= mid_y0 and y + bh <= mid_y1:
-            if bw / float(max(1, bh)) > 2.5 or bw > 0.30 * w:
+            if (bw > 0.25 * w or (bw / float(max(1, bh)) > 3.5 and bw > 80)) and (0.20 * w < x < 0.80 * w):
                 continue
         eps_int = eps_scale * length
         sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
@@ -204,6 +295,19 @@ def run_pipeline(
 
     # Step 6: Combine external silhouette and internal structural lines when view_type is set or internal preservation requested
     has_internal_active = view_type is not None or getattr(settings, "preserve_internal_features", False)
+
+    # View-specific CAD structural enhancement guided by product_description:
+    desc_text = f"{product_name or ''} {product_description or ''}".lower()
+    has_knob = any(k in desc_text for k in ["knob", "lid", "cap", "handle", "pitcher", "jug", "pot"])
+    has_mesh = any(k in desc_text for k in ["mesh", "filter", "grid", "screen", "strainer", "perforat", "crosshatch"])
+
+    if vt_norm in ("top", "topview"):
+        knob_cnts = _extract_top_knob_contours(mask, has_knob)
+        internal_contours.extend(knob_cnts)
+    elif is_bottom_view:
+        mesh_cnts = _extract_bottom_mesh_contours(mask, has_mesh)
+        internal_contours.extend(mesh_cnts)
+
     contours = ContourSet(
         outer=smoothed_outer if smoothed_outer else silhouette_contours.outer,
         holes=silhouette_contours.holes,
@@ -232,14 +336,24 @@ def run_pipeline(
         pts = np.round(c).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(comb_canvas, [pts], isClosed=False, color=0, thickness=1, lineType=cv2.LINE_AA)
 
+    gray_diag = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    denoised_diag = cv2.bilateralFilter(gray_diag, d=9, sigmaColor=45, sigmaSpace=45)
+    overlay_diag = overlay_outline(bgr, contours)
+
     diagnostics = {
+        "original_image": encode_png(bgr),
         "original_normalized": encode_png(bgr),
         "segmentation_mask": encode_png(mask),
+        "segmentation_overlay": encode_png(overlay_diag),
+        "grayscale_image": encode_png(gray_diag),
+        "denoised_image": encode_png(denoised_diag),
         "photo_edges": encode_png(photo_edges),
         "internal_edges": encode_png(clean_internal),
         "external_silhouette": encode_png(sil_canvas),
         "combined_edges": encode_png(comb_canvas),
+        "refined_contours": encode_png(comb_canvas),
         "cleaned_contours": encode_png(comb_canvas),
+        "final_patent_drawing": encode_png(drawing.image),
         "patent_drawing": encode_png(drawing.image),
     }
 

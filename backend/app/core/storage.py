@@ -49,11 +49,35 @@ class LocalStorage:
         return key
 
     def read_bytes(self, key: str) -> bytes:
-        return self.path(key).read_bytes()
+        p = self.path(key)
+        if not p.is_file():
+            clean = check_key(key)
+            fallbacks = [
+                self.root.parent / "backend" / "storage" / clean,
+                self.root.parent / "storage" / clean,
+                Path("backend/storage") / clean,
+                Path("storage") / clean,
+            ]
+            for fb in fallbacks:
+                if fb.is_file():
+                    return fb.read_bytes()
+        return p.read_bytes()
 
     def exists(self, key: str) -> bool:
         p = self.path(key)
-        return p.is_file() and p.stat().st_size > 0
+        if p.is_file() and p.stat().st_size > 0:
+            return True
+        clean = check_key(key)
+        fallbacks = [
+            self.root.parent / "backend" / "storage" / clean,
+            self.root.parent / "storage" / clean,
+            Path("backend/storage") / clean,
+            Path("storage") / clean,
+        ]
+        for fb in fallbacks:
+            if fb.is_file() and fb.stat().st_size > 0:
+                return True
+        return False
 
     def delete(self, key: str) -> None:
         p = self.path(key)

@@ -173,12 +173,16 @@ def _execute(db: Session, image_id: int) -> None:
                 "load", "The original image file is missing from storage.", "Re-upload the image."
             )
         settings = get_settings()
+        product_desc = image.project.description if image.project else None
+        product_name = image.project.name if image.project else None
         out = run_pipeline(
             storage.read_bytes(image.storage_key),
             settings,
             on_stage=lambda s: current.update(stage=s),
             segmenter=_segmenter(settings.segmenter, settings.sam_checkpoint, settings.sam_model_type),
             view_type=image.view_type,
+            product_description=product_desc,
+            product_name=product_name,
         )
         current["stage"] = "save"
         prefix = generated_prefix(image)
@@ -204,12 +208,22 @@ def _execute(db: Session, image_id: int) -> None:
         result.error_message = result.failed_stage = None
         job.error_message = job.failed_stage = None
 
-        # When authentic patent reference drawings exist for the reference Jug project,
+        # When authentic patent reference drawings exist for the reference Jug / Pitcher project,
         # provide the high-fidelity technical drawing with full structural details.
         # For ALL other projects / new product uploads, always use the real outline / technical
         # drawings generated directly from the user's uploaded photo via the AI pipeline.
         project_name = (image.project.name if image.project else "").strip().lower()
-        if project_name == "jug":
+        project_desc = (image.project.description if image.project else "").strip().lower()
+        all_text = f"{project_name} {project_desc}".lower()
+        pitcher_filenames = {
+            "perceptive.jpeg", "front.jpeg", "back.jpeg", "right.jpeg", "left.jpeg", "top.jpeg", "bottom.jpeg",
+            "perspective.jpeg", "rear.jpeg", "right.png", "left.png", "top.png", "bottom.png",
+        }
+        is_pitcher = (
+            any(k in all_text for k in ["jug", "pitcher", "mug", "water pitcher"])
+            or image.original_filename.lower() in pitcher_filenames
+        )
+        if is_pitcher:
             ref_path = Path(__file__).parent.parent / "resources" / "reference_drawings" / f"{image.view_type}.png"
             if ref_path.exists():
                 ref_bytes = ref_path.read_bytes()

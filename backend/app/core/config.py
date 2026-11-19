@@ -6,6 +6,9 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+
+
 class Settings(BaseSettings):
     # PV_ENV_FILE="" disables .env loading (tests must not pick up a developer's local settings).
     model_config = SettingsConfigDict(
@@ -14,14 +17,14 @@ class Settings(BaseSettings):
 
     # PV_DATABASE_URL wins; otherwise the DATABASE_URL / POSTGRES_URL injected by the Neon integration.
     database_url: str = Field(
-        default="sqlite:///./patentvision.db",
+        default=f"sqlite:///{_BACKEND_DIR.as_posix()}/patentvision.db",
         validation_alias=AliasChoices("PV_DATABASE_URL", "DATABASE_URL", "POSTGRES_URL"),
     )
     auto_create_tables: bool = True
 
     # local: files under storage_root. blob: Vercel Blob (private store). auto: blob when Blob credentials exist.
     storage_backend: str = "auto"
-    storage_root: Path = Path("./storage")
+    storage_root: Path = _BACKEND_DIR / "storage"
 
     # Public URL prefix the API is mounted under (Vercel routes /api/* to this service). Stripped if present.
     api_prefix: str = "/api"
