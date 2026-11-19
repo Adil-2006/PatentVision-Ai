@@ -266,14 +266,24 @@ def list_diagnostics(
 ):
     image = get_owned_image(db, user, image_id)
     stages = [
-        {"stage": "original_normalized", "label": "1. Normalized Photograph"},
+        {"stage": "original_image", "label": "1. Original Photograph"},
         {"stage": "segmentation_mask", "label": "2. Solid Segmentation Mask"},
-        {"stage": "photo_edges", "label": "3. Photographic Edges (CLAHE + Canny)"},
-        {"stage": "internal_edges", "label": "4. Internal Structural Details"},
-        {"stage": "external_silhouette", "label": "5. External Product Silhouette"},
-        {"stage": "combined_edges", "label": "6. Combined Technical Edges"},
-        {"stage": "cleaned_contours", "label": "7. Cleaned Contours"},
-        {"stage": "patent_drawing", "label": "8. Final Patent Illustration"},
+        {"stage": "segmentation_overlay", "label": "3. Segmentation Overlay"},
+        {"stage": "grayscale_image", "label": "4. Preprocessed Grayscale"},
+        {"stage": "smoothed_image", "label": "5. Smoothed Edge-Preserving Image"},
+        {"stage": "weak_edges", "label": "6. Weak-Edge Map"},
+        {"stage": "strong_edges", "label": "7. Strong-Edge Map"},
+        {"stage": "structural_edges", "label": "8. Filtered Structural Details"},
+        {"stage": "external_silhouette", "label": "9. External Product Silhouette"},
+        {"stage": "combined_edges", "label": "10. Combined Technical Edges"},
+        {"stage": "patent_drawing", "label": "11. Final Patent Illustration"},
+        {"stage": "original_normalized", "label": "Original Normalized"},
+        {"stage": "photo_edges", "label": "Detected Edges"},
+        {"stage": "denoised_image", "label": "Denoised Image"},
+        {"stage": "internal_edges", "label": "Internal Edges"},
+        {"stage": "refined_contours", "label": "Refined Contours"},
+        {"stage": "cleaned_contours", "label": "Cleaned Contours"},
+        {"stage": "final_patent_drawing", "label": "Final Patent Drawing"},
     ]
     available = []
     prefix = f"diagnostics/{image.project_id}/{image.id}"

@@ -133,12 +133,27 @@ def queue_image(db: Session, image: Image) -> ProcessingJob:
     return job
 
 
-def run_job(image_id: int) -> None:
+def run_job(
+    image_id: int,
+    detail_level: str | None = None,
+    edge_low: float | None = None,
+    edge_high: float | None = None,
+    smoothing_strength: float | None = None,
+    min_contour_length: float | None = None,
+) -> None:
     """Process a claimed image. Owns its own DB session."""
     with _job_slots():
         db = database.SessionLocal()
         try:
-            _execute(db, image_id)
+            _execute(
+                db,
+                image_id,
+                detail_level=detail_level,
+                edge_low=edge_low,
+                edge_high=edge_high,
+                smoothing_strength=smoothing_strength,
+                min_contour_length=min_contour_length,
+            )
         except Exception:  # last-resort guard: never leave a job stuck in Processing
             log.exception("job for image %s crashed outside the pipeline", image_id)
             db.rollback()
@@ -157,7 +172,15 @@ def _sanitize_for_json(obj: Any) -> Any:
     return obj
 
 
-def _execute(db: Session, image_id: int) -> None:
+def _execute(
+    db: Session,
+    image_id: int,
+    detail_level: str | None = None,
+    edge_low: float | None = None,
+    edge_high: float | None = None,
+    smoothing_strength: float | None = None,
+    min_contour_length: float | None = None,
+) -> None:
     image = db.get(Image, image_id)
     if image is None or image.processing_status != "Queued":
         return
@@ -183,6 +206,11 @@ def _execute(db: Session, image_id: int) -> None:
             view_type=image.view_type,
             product_description=product_desc,
             product_name=product_name,
+            detail_level=detail_level,
+            edge_low=edge_low,
+            edge_high=edge_high,
+            smoothing_strength=smoothing_strength,
+            min_contour_length=min_contour_length,
         )
         current["stage"] = "save"
         prefix = generated_prefix(image)

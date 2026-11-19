@@ -107,7 +107,10 @@ def update_document_metadata(
     meta.product_title = body.product_title
     meta.application_number = body.application_number
     meta.filing_date = body.filing_date
-    meta.novelty_statement = body.novelty_statement
+    if not body.novelty_statement or any(k in body.novelty_statement.lower() for k in ["brushmate", "brush", "jug", "pitcher"]):
+        meta.novelty_statement = DEFAULT_NOVELTY_TEMPLATE.format(title=body.product_title or project.name)
+    else:
+        meta.novelty_statement = body.novelty_statement
     meta.disclaimer = body.disclaimer
     meta.agent_name = body.agent_name
     meta.agent_registration_number = body.agent_registration_number
@@ -181,11 +184,15 @@ def generate_document(
     meta = _get_or_create_metadata(db, project)
 
     # 1. Check all seven views exist and are active
-    active_images = {
-        img.view_type: img
-        for img in project.images
-        if getattr(img, "is_active", True) and img.view_type in REQUIRED_VIEW_TYPES
-    }
+    images = db.scalars(
+        select(Image)
+        .where(Image.project_id == project.id, Image.is_active == True)
+        .order_by(Image.id.desc())
+    ).all()
+    active_images: dict[str, Image] = {}
+    for img in images:
+        if img.view_type in REQUIRED_VIEW_TYPES and img.view_type not in active_images:
+            active_images[img.view_type] = img
     missing = [v for v in REQUIRED_VIEW_TYPES if v not in active_images]
     if missing:
         raise ApiError(

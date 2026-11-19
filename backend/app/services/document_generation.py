@@ -73,7 +73,7 @@ def generate_patent_pdf(
     c = canvas.Canvas(buffer, pagesize=A4, pageCompression=0)
     total_pages = len(PDF_VIEW_ORDER)
 
-    applicant_name = (getattr(metadata, "applicant_name", "") or "").strip() or "Applicant Name"
+    applicant_name = (getattr(metadata, "applicant_name", "") or "").strip()
     product_title = (getattr(metadata, "product_title", "") or "").strip() or "PRODUCT"
     filing_date = (getattr(metadata, "filing_date", "") or "").strip() or "—"
     agent_name = (getattr(metadata, "agent_name", "") or "").strip()
@@ -81,7 +81,10 @@ def generate_patent_pdf(
     agent_desig = (getattr(metadata, "agent_designation", "") or "").strip() or "Agent for the Applicant"
 
     custom_novelty = (getattr(metadata, "novelty_statement", "") or "").strip()
-    novelty_body = custom_novelty if custom_novelty else DEFAULT_NOVELTY_TEMPLATE.format(title=product_title)
+    if not custom_novelty or any(k in custom_novelty.lower() for k in ["brushmate", "brush", "jug", "pitcher"]):
+        novelty_body = DEFAULT_NOVELTY_TEMPLATE.format(title=product_title)
+    else:
+        novelty_body = custom_novelty
 
     custom_disclaimer = (getattr(metadata, "disclaimer", "") or "").strip()
     if custom_disclaimer:
@@ -94,7 +97,10 @@ def generate_patent_pdf(
 
         # 1. Header: Applicant Name (Left) and Page No. (Right)
         c.setFont("Times-Roman", 11)
-        c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, f"Applicant Name: {applicant_name}")
+        if applicant_name and applicant_name.lower() not in ("applicant name", "—", "none"):
+            c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, f"Applicant Name: {applicant_name}")
+        else:
+            c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, "Applicant Name: —")
         c.drawRightString(RIGHT_MARGIN, PAGE_HEIGHT - 54, f"Page No.: {page_num} of {total_pages}")
 
         # 2. Centered Technical Drawing Box
@@ -170,12 +176,12 @@ def generate_patent_pdf(
             except Exception:
                 pass
 
-        if agent_name:
+        if agent_name and agent_name.lower() not in ("—", "none", ""):
             c.drawRightString(sig_right, sig_y - 12, agent_name)
             sig_y -= 14
-        if agent_reg:
-            c.drawRightString(sig_right, sig_y - 12, f"({agent_reg})")
-            sig_y -= 14
+            if agent_reg and agent_reg.lower() not in ("—", "none", ""):
+                c.drawRightString(sig_right, sig_y - 12, f"({agent_reg})")
+                sig_y -= 14
         if agent_desig:
             c.drawRightString(sig_right, sig_y - 12, agent_desig)
 

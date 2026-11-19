@@ -22,7 +22,12 @@ router = APIRouter(prefix="/ai", tags=["ai"])
     response_model=ProjectProcessAccepted,
     dependencies=[Depends(rate_limit("process"))],
 )
-def process_project(project_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def process_project(
+    project_id: int,
+    detail_level: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Process every image that is not already in flight (so failed views can be re-run)."""
     project = get_owned_project(db, user, project_id)
     expire_stale(db, project.images)
@@ -37,7 +42,7 @@ def process_project(project_id: int, db: Session = Depends(get_db), user: User =
             skipped.append(image.id)
             continue
         queued.append(image.id)
-        run_job(image.id)
+        run_job(image.id, detail_level=detail_level)
     return ProjectProcessAccepted(project_id=project.id, queued=queued, skipped=skipped)
 
 
@@ -46,11 +51,27 @@ def process_project(project_id: int, db: Session = Depends(get_db), user: User =
     response_model=ProcessAccepted,
     dependencies=[Depends(rate_limit("process"))],
 )
-def process_image(image_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def process_image(
+    image_id: int,
+    detail_level: str | None = None,
+    edge_low: float | None = None,
+    edge_high: float | None = None,
+    smoothing_strength: float | None = None,
+    min_contour_length: float | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Run the pipeline for one image and return its final status (Completed or Failed)."""
     image = get_owned_image(db, user, image_id)
     queue_image(db, image)
-    run_job(image.id)
+    run_job(
+        image.id,
+        detail_level=detail_level,
+        edge_low=edge_low,
+        edge_high=edge_high,
+        smoothing_strength=smoothing_strength,
+        min_contour_length=min_contour_length,
+    )
     db.expire_all()
     image = db.get(Image, image_id)
     return ProcessAccepted(image_id=image.id, status=image.processing_status, job=JobOut.model_validate(image.job))
