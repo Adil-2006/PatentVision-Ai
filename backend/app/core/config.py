@@ -47,11 +47,12 @@ class Settings(BaseSettings):
     keep_openings: bool = False
     drawing_long_side: int = 1400
     drawing_line_width: float = 4.0
-    drawing_detail_level: str = "clean"  # clean | detailed
+    drawing_detail_level: str = "standard"  # standard (restored previous best default) | clean | detailed
     edge_low_threshold: float | None = None
     edge_high_threshold: float | None = None
     smoothing_strength: float | None = None
     min_contour_length: float | None = None
+    texture_suppression: bool = False
 
     rate_limit_per_minute: int = 60
     max_concurrent_jobs: int = 2

@@ -25,6 +25,8 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 def process_project(
     project_id: int,
     detail_level: str | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -42,7 +44,12 @@ def process_project(
             skipped.append(image.id)
             continue
         queued.append(image.id)
-        run_job(image.id, detail_level=detail_level)
+        run_job(
+            image.id,
+            detail_level=detail_level,
+            texture_suppression=texture_suppression,
+            line_width=line_width,
+        )
     return ProjectProcessAccepted(project_id=project.id, queued=queued, skipped=skipped)
 
 
@@ -58,6 +65,8 @@ def process_image(
     edge_high: float | None = None,
     smoothing_strength: float | None = None,
     min_contour_length: float | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -71,6 +80,8 @@ def process_image(
         edge_high=edge_high,
         smoothing_strength=smoothing_strength,
         min_contour_length=min_contour_length,
+        texture_suppression=texture_suppression,
+        line_width=line_width,
     )
     db.expire_all()
     image = db.get(Image, image_id)

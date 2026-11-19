@@ -43,6 +43,36 @@ class PipelineOutput:
     diagnostics: dict[str, bytes] = field(default_factory=dict)
 
 
+def extract_photo_edges(
+    bgr: np.ndarray,
+    view_type: str | None = None,
+    edge_low: float | None = None,
+    edge_high: float | None = None,
+    smoothing_strength: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """Extract sharp patent-style edges matching the previous best implementation:
+    CLAHE + Bilateral Filter (d=9) + Canny (L2 gradient)."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
+    is_bottom = vt_norm in ("bottom", "bottomview")
+
+    default_low = 35.0 if is_bottom else 25.0
+    default_high = 90.0 if is_bottom else 75.0
+    default_sigma = 60.0 if is_bottom else 45.0
+    default_clahe = 1.5 if is_bottom else 2.0
+
+    low_t = float(edge_low if edge_low is not None else default_low)
+    high_t = float(edge_high if edge_high is not None else default_high)
+    s_val = float(smoothing_strength if smoothing_strength is not None else default_sigma)
+
+    clahe = cv2.createCLAHE(clipLimit=default_clahe, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=s_val, sigmaSpace=s_val)
+    photo_edges = cv2.Canny(blurred, int(low_t), int(high_t), L2gradient=True)
+    edges_weak = cv2.Canny(blurred, int(max(8.0, low_t * 0.6)), int(low_t), L2gradient=True)
+    return photo_edges, gray, blurred, edges_weak, low_t, high_t
+
+
 def fill_enclosed_cavities(mask: np.ndarray) -> np.ndarray:
     """Fill fully enclosed background cavities inside the product (such as transparent bodies, inner liquid chambers)."""
     h, w = mask.shape[:2]
@@ -92,6 +122,8 @@ def run_pipeline(
     edge_high: float | None = None,
     smoothing_strength: float | None = None,
     min_contour_length: float | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
 ) -> PipelineOutput:
     settings = settings or get_settings()
     remover = remover or get_background_remover(settings.background_remover)
@@ -104,6 +136,15 @@ def run_pipeline(
     loaded = load_image(data, settings.processing_max_side)
     bgr = loaded.bgr
     w, h = loaded.size
+
+    # Step 1: Extract genuine photographic edges (Previous best baseline restored)
+    photo_edges, gray, smoothed, edges_weak, low_t, high_t = extract_photo_edges(
+        bgr,
+        view_type=view_type,
+        edge_low=edge_low,
+        edge_high=edge_high,
+        smoothing_strength=smoothing_strength,
+    )
 
     stage("background_removal")
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
@@ -141,60 +182,17 @@ def run_pipeline(
     else:
         mask = raw_mask
 
-    # Step 2: Adaptive Texture & Multi-Scale Edge Extraction
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    mode = (detail_level or getattr(settings, "drawing_detail_level", "clean")).lower().strip()
-
-    # Calculate gradient energy strictly within the segmented product mask
-    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    mag = np.hypot(gx, gy)
-    prod_mag = mag[mask > 128]
-    mean_mag = float(np.mean(prod_mag)) if len(prod_mag) else 0.0
-    is_textured = mean_mag > 28.0
-
-    if is_textured:
-        # Woven fabric or high-frequency surface texture: strong edge-preserving bilateral filter
-        s_strength = int(smoothing_strength or 100)
-        smoothed = cv2.bilateralFilter(gray, d=11, sigmaColor=s_strength, sigmaSpace=100)
-        if mode == "clean":
-            low_t = float(edge_low if edge_low is not None else 60.0)
-            high_t = float(edge_high if edge_high is not None else 150.0)
-            min_cnt_len = float(min_contour_length if min_contour_length is not None else 15.0)
-        else:  # detailed mode
-            low_t = float(edge_low if edge_low is not None else 40.0)
-            high_t = float(edge_high if edge_high is not None else 110.0)
-            min_cnt_len = float(min_contour_length if min_contour_length is not None else 10.0)
-    else:
-        # Smooth product (mug, plastic bottle, pitcher): standard bilateral filter
-        s_strength = int(smoothing_strength or 45)
-        smoothed = cv2.bilateralFilter(gray, d=9, sigmaColor=s_strength, sigmaSpace=45)
-        if mode == "clean":
-            low_t = float(edge_low if edge_low is not None else 30.0)
-            high_t = float(edge_high if edge_high is not None else 85.0)
-            min_cnt_len = float(min_contour_length if min_contour_length is not None else 8.0)
-        else:  # detailed mode
-            low_t = float(edge_low if edge_low is not None else 22.0)
-            high_t = float(edge_high if edge_high is not None else 65.0)
-            min_cnt_len = float(min_contour_length if min_contour_length is not None else 5.0)
-
-    # Multi-scale edge extraction: weak and strong edge maps
-    weak_low = max(8.0, low_t * 0.5)
-    edges_weak = cv2.Canny(smoothed, int(weak_low), int(low_t), L2gradient=True)
-    edges_strong = cv2.Canny(smoothed, int(low_t), int(high_t), L2gradient=True)
-    photo_edges = edges_strong.copy()
-
     # Step 3: Branding cleanup and mask-restricted internal edge extraction
     branding_regions = detect_branding_regions(bgr, mask)
 
-    # Restrict photo edges to the interior of the product mask (eroded by 1 px to avoid outer silhouette duplication)
-    eroded_mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
+    # Restrict photo edges to the interior of the product mask (eroded by 2 px)
+    eroded_mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=2)
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
 
     is_bottom_view = vt_norm in ("bottom", "bottomview")
-    min_area = 6 if is_bottom_view else 4
+    min_area = 8 if is_bottom_view else 4
 
-    # Filter small noise specks from internal edges
+    # Filter small noise specks (< 4px, or 8px for bottom)
     n_ie, labels_ie, stats_ie, _ = cv2.connectedComponentsWithStats(internal_edges, connectivity=8)
     clean_internal = np.zeros_like(internal_edges)
     for i in range(1, n_ie):
@@ -211,23 +209,39 @@ def run_pipeline(
         sm = cv2.approxPolyDP(oc.astype(np.float32), eps_out, True)
         smoothed_outer.append(sm.reshape(-1, 2).astype(np.float32))
 
-    # Extract internal structural contours directly from photographic edges
-    raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    # Extract internal structural contours directly from photographic edges (CHAIN_APPROX_NONE restored)
+    raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     internal_contours: list[np.ndarray] = []
+    default_min_len = 20.0 if is_bottom_view else 5.0
+    min_cnt_len = float(min_contour_length if min_contour_length is not None else default_min_len)
+    min_cnt_pts = 4 if is_bottom_view else 3
+    eps_scale = 0.0010 if is_bottom_view else 0.0008
+
+    suppress_tex = bool(texture_suppression or getattr(settings, "texture_suppression", False))
 
     for c in raw_int_cnts:
-        peri = cv2.arcLength(c, False)
-        x_c, y_c, bw_c, bh_c = cv2.boundingRect(c)
-        if bw_c < 3 and bh_c < 3:
+        length = float(cv2.arcLength(c, False))
+        if len(c) < min_cnt_pts:
             continue
-        is_compact_feature = (peri >= 10 and bw_c >= 3 and bh_c >= 3 and bw_c <= 0.40 * w and bh_c <= 0.40 * h)
-        is_structural_line = (peri >= min_cnt_len and (bw_c >= 4 or bh_c >= 4))
-        if is_compact_feature or is_structural_line:
-            eps_int = 0.0012 * peri
-            sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
-            pts = sm.reshape(-1, 2).astype(np.float32)
-            if len(pts) >= 2:
-                internal_contours.append(pts)
+
+        if suppress_tex:
+            x_c, y_c, bw_c, bh_c = cv2.boundingRect(c)
+            # Gentle texture suppression:
+            # 1. ALWAYS preserve compact closed loops (buttons, port openings, screws, jacks)
+            is_compact = (bw_c >= 4 and bh_c >= 4 and bw_c <= 0.40 * w and bh_c <= 0.40 * h and length >= 10.0)
+            # 2. Preserve continuous structural lines
+            is_long_line = (length >= max(min_cnt_len, 10.0) and (bw_c >= 4 or bh_c >= 4))
+            if not (is_compact or is_long_line):
+                continue
+        else:
+            if length < min_cnt_len:
+                continue
+
+        eps_int = eps_scale * length
+        sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
+        pts = sm.reshape(-1, 2).astype(np.float32)
+        if len(pts) >= 2:
+            internal_contours.append(pts)
 
     # Step 5: Combine external silhouette and internal structural lines
     has_internal_active = view_type is not None or getattr(settings, "preserve_internal_features", False)
@@ -242,11 +256,12 @@ def run_pipeline(
     contours, branding_warnings = clean_branding_and_text(contours, branding_regions, (h, w))
 
     stage("rendering")
+    effective_line_width = float(line_width if line_width is not None else settings.drawing_line_width)
     drawing = render_drawing(
-        contours, long_side=settings.drawing_long_side, line_width=settings.drawing_line_width
+        contours, long_side=settings.drawing_long_side, line_width=effective_line_width
     )
     drawing_svg_bytes = render_svg(
-        contours, long_side=settings.drawing_long_side, line_width=settings.drawing_line_width
+        contours, long_side=settings.drawing_long_side, line_width=effective_line_width
     ).encode("utf-8")
 
     # Step 6: Build all 11 diagnostic visualizations (PART 7)
@@ -270,7 +285,7 @@ def run_pipeline(
         "grayscale_image": encode_png(gray),
         "smoothed_image": encode_png(smoothed),
         "weak_edges": encode_png(edges_weak),
-        "strong_edges": encode_png(edges_strong),
+        "strong_edges": encode_png(photo_edges),
         "structural_edges": encode_png(clean_internal),
         "external_silhouette": encode_png(sil_canvas),
         "combined_edges": encode_png(comb_canvas),
@@ -328,9 +343,8 @@ def run_pipeline(
         "branding_regions": [r.as_dict() for r in branding_regions],
         "quality_status": quality_status,
         "quality_warnings": quality_warnings,
-        "detail_level": mode,
-        "texture_detected": is_textured,
-        "mean_gradient": round(mean_mag, 2),
+        "detail_level": detail_level or getattr(settings, "drawing_detail_level", "standard"),
+        "texture_suppression": suppress_tex,
         "edge_thresholds": [low_t, high_t],
         "diagnostics": {k: True for k in diagnostics.keys()},
     }

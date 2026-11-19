@@ -140,6 +140,8 @@ def run_job(
     edge_high: float | None = None,
     smoothing_strength: float | None = None,
     min_contour_length: float | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
 ) -> None:
     """Process a claimed image. Owns its own DB session."""
     with _job_slots():
@@ -153,6 +155,8 @@ def run_job(
                 edge_high=edge_high,
                 smoothing_strength=smoothing_strength,
                 min_contour_length=min_contour_length,
+                texture_suppression=texture_suppression,
+                line_width=line_width,
             )
         except Exception:  # last-resort guard: never leave a job stuck in Processing
             log.exception("job for image %s crashed outside the pipeline", image_id)
@@ -180,6 +184,8 @@ def _execute(
     edge_high: float | None = None,
     smoothing_strength: float | None = None,
     min_contour_length: float | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
 ) -> None:
     image = db.get(Image, image_id)
     if image is None or image.processing_status != "Queued":
@@ -211,6 +217,8 @@ def _execute(
             edge_high=edge_high,
             smoothing_strength=smoothing_strength,
             min_contour_length=min_contour_length,
+            texture_suppression=texture_suppression,
+            line_width=line_width,
         )
         current["stage"] = "save"
         prefix = generated_prefix(image)
