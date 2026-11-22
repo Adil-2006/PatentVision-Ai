@@ -49,28 +49,46 @@ def extract_photo_edges(
     edge_low: float | None = None,
     edge_high: float | None = None,
     smoothing_strength: float | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+    texture_suppression: bool | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, bool]:
     """Extract sharp patent-style edges matching the previous best implementation:
-    CLAHE + Bilateral Filter (d=9) + Canny (L2 gradient)."""
+    Bilateral Filter (d=9) + Canny (L2 gradient), with texture-adaptive noise suppression."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
     is_bottom = vt_norm in ("bottom", "bottomview")
 
-    default_low = 35.0 if is_bottom else 25.0
-    default_high = 90.0 if is_bottom else 75.0
-    default_sigma = 60.0 if is_bottom else 45.0
-    default_clahe = 1.5 if is_bottom else 2.0
+    # Detect high-frequency surface texture (woven fabric mesh, knurling, cloth grain)
+    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    hp = gray.astype(float) - cv2.GaussianBlur(gray, (5, 5), 1.0).astype(float)
+    hp_energy = float(np.mean(np.abs(hp)))
+    is_textured = bool(texture_suppression or (lap_var > 180.0 and hp_energy > 2.0))
 
-    low_t = float(edge_low if edge_low is not None else default_low)
-    high_t = float(edge_high if edge_high is not None else default_high)
-    s_val = float(smoothing_strength if smoothing_strength is not None else default_sigma)
+    if is_textured:
+        # Heavily textured surfaces (speaker mesh, fabric, knurling):
+        # Do NOT amplify thread contrast with CLAHE; smooth micro-texture while preserving real physical features
+        default_low = 30.0
+        default_high = 80.0
+        default_sigma = 45.0
+        s_val = float(smoothing_strength if smoothing_strength is not None else default_sigma)
+        low_t = float(edge_low if edge_low is not None else default_low)
+        high_t = float(edge_high if edge_high is not None else default_high)
+        blurred = cv2.bilateralFilter(gray, d=9, sigmaColor=s_val, sigmaSpace=s_val)
+    else:
+        # Standard smooth product baseline (mug, plastic bottle, pitcher, tools):
+        default_low = 35.0 if is_bottom else 25.0
+        default_high = 90.0 if is_bottom else 75.0
+        default_sigma = 60.0 if is_bottom else 45.0
+        default_clahe = 1.5 if is_bottom else 2.0
+        s_val = float(smoothing_strength if smoothing_strength is not None else default_sigma)
+        low_t = float(edge_low if edge_low is not None else default_low)
+        high_t = float(edge_high if edge_high is not None else default_high)
+        clahe = cv2.createCLAHE(clipLimit=default_clahe, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=s_val, sigmaSpace=s_val)
 
-    clahe = cv2.createCLAHE(clipLimit=default_clahe, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=s_val, sigmaSpace=s_val)
     photo_edges = cv2.Canny(blurred, int(low_t), int(high_t), L2gradient=True)
     edges_weak = cv2.Canny(blurred, int(max(8.0, low_t * 0.6)), int(low_t), L2gradient=True)
-    return photo_edges, gray, blurred, edges_weak, low_t, high_t
+    return photo_edges, gray, blurred, edges_weak, low_t, high_t, is_textured
 
 
 def fill_enclosed_cavities(mask: np.ndarray) -> np.ndarray:
@@ -138,12 +156,13 @@ def run_pipeline(
     w, h = loaded.size
 
     # Step 1: Extract genuine photographic edges (Previous best baseline restored)
-    photo_edges, gray, smoothed, edges_weak, low_t, high_t = extract_photo_edges(
+    photo_edges, gray, smoothed, edges_weak, low_t, high_t, is_textured = extract_photo_edges(
         bgr,
         view_type=view_type,
         edge_low=edge_low,
         edge_high=edge_high,
         smoothing_strength=smoothing_strength,
+        texture_suppression=texture_suppression,
     )
 
     stage("background_removal")
@@ -190,9 +209,9 @@ def run_pipeline(
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
 
     is_bottom_view = vt_norm in ("bottom", "bottomview")
-    min_area = 8 if is_bottom_view else 4
+    min_area = 8 if (is_bottom_view or is_textured) else 4
 
-    # Filter small noise specks (< 4px, or 8px for bottom)
+    # Filter small noise specks (< 4px, or 8px for bottom / textured)
     n_ie, labels_ie, stats_ie, _ = cv2.connectedComponentsWithStats(internal_edges, connectivity=8)
     clean_internal = np.zeros_like(internal_edges)
     for i in range(1, n_ie):
@@ -212,12 +231,12 @@ def run_pipeline(
     # Extract internal structural contours directly from photographic edges (CHAIN_APPROX_NONE restored)
     raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     internal_contours: list[np.ndarray] = []
-    default_min_len = 20.0 if is_bottom_view else 5.0
+    default_min_len = 20.0 if is_bottom_view else (8.0 if is_textured else 5.0)
     min_cnt_len = float(min_contour_length if min_contour_length is not None else default_min_len)
-    min_cnt_pts = 4 if is_bottom_view else 3
+    min_cnt_pts = 4 if (is_bottom_view or is_textured) else 3
     eps_scale = 0.0010 if is_bottom_view else 0.0008
 
-    suppress_tex = bool(texture_suppression or getattr(settings, "texture_suppression", False))
+    suppress_tex = bool(texture_suppression or getattr(settings, "texture_suppression", False) or is_textured)
 
     for c in raw_int_cnts:
         length = float(cv2.arcLength(c, False))
@@ -228,9 +247,9 @@ def run_pipeline(
             x_c, y_c, bw_c, bh_c = cv2.boundingRect(c)
             # Gentle texture suppression:
             # 1. ALWAYS preserve compact closed loops (buttons, port openings, screws, jacks)
-            is_compact = (bw_c >= 4 and bh_c >= 4 and bw_c <= 0.40 * w and bh_c <= 0.40 * h and length >= 10.0)
+            is_compact = (bw_c >= 4 and bh_c >= 4 and bw_c <= 0.40 * w and bh_c <= 0.40 * h and length >= 8.0)
             # 2. Preserve continuous structural lines
-            is_long_line = (length >= max(min_cnt_len, 10.0) and (bw_c >= 4 or bh_c >= 4))
+            is_long_line = (length >= max(min_cnt_len, 8.0) and (bw_c >= 4 or bh_c >= 4))
             if not (is_compact or is_long_line):
                 continue
         else:
@@ -256,7 +275,8 @@ def run_pipeline(
     contours, branding_warnings = clean_branding_and_text(contours, branding_regions, (h, w))
 
     stage("rendering")
-    effective_line_width = float(line_width if line_width is not None else settings.drawing_line_width)
+    default_lw = 2.5 if is_textured else settings.drawing_line_width
+    effective_line_width = float(line_width if line_width is not None else default_lw)
     drawing = render_drawing(
         contours, long_side=settings.drawing_long_side, line_width=effective_line_width
     )
@@ -345,6 +365,7 @@ def run_pipeline(
         "quality_warnings": quality_warnings,
         "detail_level": detail_level or getattr(settings, "drawing_detail_level", "standard"),
         "texture_suppression": suppress_tex,
+        "texture_detected": is_textured,
         "edge_thresholds": [low_t, high_t],
         "diagnostics": {k: True for k in diagnostics.keys()},
     }

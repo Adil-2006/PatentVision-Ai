@@ -58,17 +58,30 @@ def _metadata_out(meta: DocumentMetadata) -> DocumentMetadataOut:
     )
 
 
+def _resolve_default_applicant(project: Project) -> str:
+    owner = getattr(project, "owner", None)
+    owner_name = (getattr(owner, "name", "") or "").strip() if owner else ""
+    if not owner_name or owner_name.lower() in ("shaik", "user", "admin"):
+        if owner and "smdadilahmed" in (getattr(owner, "email", "") or "").lower():
+            return "S MD Adil Ahmed"
+        elif owner_name:
+            return owner_name
+        return "S MD Adil Ahmed"
+    return owner_name
+
+
 def _get_or_create_metadata(db: Session, project: Project) -> DocumentMetadata:
     meta = db.scalar(
         select(DocumentMetadata).where(DocumentMetadata.project_id == project.id)
     )
+    default_applicant = _resolve_default_applicant(project)
     if meta is None:
         today_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
         default_novelty = DEFAULT_NOVELTY_TEMPLATE.format(title=project.name)
         default_disclaimer = "\n".join(f"• {b}" for b in DEFAULT_DISCLAIMER_BULLETS)
         meta = DocumentMetadata(
             project_id=project.id,
-            applicant_name="",
+            applicant_name=default_applicant,
             product_title=project.name,
             application_number=None,
             filing_date=today_str,
@@ -80,6 +93,10 @@ def _get_or_create_metadata(db: Session, project: Project) -> DocumentMetadata:
             signature_key=None,
         )
         db.add(meta)
+        db.commit()
+        db.refresh(meta)
+    elif not (meta.applicant_name or "").strip():
+        meta.applicant_name = default_applicant
         db.commit()
         db.refresh(meta)
     return meta

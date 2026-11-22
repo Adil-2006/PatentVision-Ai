@@ -74,6 +74,22 @@ def generate_patent_pdf(
     total_pages = len(PDF_VIEW_ORDER)
 
     applicant_name = (getattr(metadata, "applicant_name", "") or "").strip()
+    if not applicant_name or applicant_name.lower() in ("applicant name", "—", "none", "-"):
+        if hasattr(metadata, "project") and metadata.project and getattr(metadata.project, "owner", None):
+            owner = metadata.project.owner
+            owner_name = (getattr(owner, "name", "") or "").strip()
+            if not owner_name or owner_name.lower() in ("shaik", "user", "admin"):
+                if "smdadilahmed" in (getattr(owner, "email", "") or "").lower():
+                    applicant_name = "S MD Adil Ahmed"
+                elif owner_name:
+                    applicant_name = owner_name
+                else:
+                    applicant_name = "S MD Adil Ahmed"
+            else:
+                applicant_name = owner_name
+        else:
+            applicant_name = "S MD Adil Ahmed"
+
     product_title = (getattr(metadata, "product_title", "") or "").strip() or "PRODUCT"
     filing_date = (getattr(metadata, "filing_date", "") or "").strip() or "—"
     agent_name = (getattr(metadata, "agent_name", "") or "").strip()
@@ -97,10 +113,10 @@ def generate_patent_pdf(
 
         # 1. Header: Applicant Name (Left) and Page No. (Right)
         c.setFont("Times-Roman", 11)
-        if applicant_name and applicant_name.lower() not in ("applicant name", "—", "none"):
+        if applicant_name and applicant_name.lower() not in ("—", "none", "-"):
             c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, f"Applicant Name: {applicant_name}")
         else:
-            c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, "Applicant Name: —")
+            c.drawString(LEFT_MARGIN, PAGE_HEIGHT - 54, "Applicant Name: S MD Adil Ahmed")
         c.drawRightString(RIGHT_MARGIN, PAGE_HEIGHT - 54, f"Page No.: {page_num} of {total_pages}")
 
         # 2. Centered Technical Drawing Box

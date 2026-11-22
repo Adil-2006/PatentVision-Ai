@@ -99,8 +99,9 @@ function ProjectView({ id }: { id: number }) {
         setViews(v.views);
         setMetadata(m);
         setDocuments(docs);
+        const resolvedApplicant = (m.applicant_name && m.applicant_name.trim().length > 0) ? m.applicant_name : "S MD Adil Ahmed";
         setMetaForm((prev) => ({
-          applicant_name: prev.applicant_name ?? m.applicant_name ?? "",
+          applicant_name: prev.applicant_name ?? resolvedApplicant,
           product_title: prev.product_title ?? m.product_title ?? p.name,
           application_number: prev.application_number ?? m.application_number ?? "",
           filing_date: prev.filing_date ?? m.filing_date ?? "",
@@ -387,6 +388,9 @@ function ProjectView({ id }: { id: number }) {
     setError(null);
     setGeneratingPdf(true);
     try {
+      if (metaForm) {
+        await api.updateDocumentMetadata(id, metaForm);
+      }
       await api.generateDocument(id);
       toast("success", "Official 7-Page Patent Representation PDF generated!");
       load();

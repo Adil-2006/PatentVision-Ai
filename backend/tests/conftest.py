@@ -4,7 +4,9 @@ import tempfile
 from pathlib import Path
 
 # Configure the app BEFORE importing it: tests use a throw-away database and storage root.
-_TMP = Path(tempfile.mkdtemp(prefix="pv-tests-"))
+_TMP_BASE = Path(__file__).parent / ".test_tmp"
+_TMP_BASE.mkdir(parents=True, exist_ok=True)
+_TMP = Path(tempfile.mkdtemp(prefix="pv-tests-", dir=_TMP_BASE))
 os.environ["PV_ENV_FILE"] = ""  # ignore any developer .env
 os.environ["PV_DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["PV_STORAGE_ROOT"] = str(_TMP / "storage")
