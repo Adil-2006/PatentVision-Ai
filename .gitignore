@@ -14,3 +14,4 @@ node_modules/
 frontend/.env.local
 .vercel/
 *.pdf
+backend/scratch_test/
