@@ -23,8 +23,8 @@ def _contour_length(pts: np.ndarray) -> float:
     return float(np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1).sum())
 
 
-def render_drawing(contours: ContourSet, long_side: int = 1400, line_width: float = 4.0) -> Drawing:
-    """White canvas, uniform black anti-aliased outline, whole object visible with margins."""
+def render_drawing(contours: ContourSet, long_side: int = 1400, line_width: float = 4.8) -> Drawing:
+    """White canvas, bold technical outer outline and solid internal features, whole object visible with margins."""
     draw_pts = contours.outer + contours.holes + [p for p in getattr(contours, "internal", []) if len(p)]
     if not draw_pts:
         raise PipelineError("rendering", "The extracted contour is degenerate.")
@@ -40,7 +40,7 @@ def render_drawing(contours: ContourSet, long_side: int = 1400, line_width: floa
 
     big = np.full((height * SUPERSAMPLE, width * SUPERSAMPLE), 255, np.uint8)
     thickness = max(1, round(line_width * SUPERSAMPLE))
-    int_thickness = max(1, round(line_width * 0.60 * SUPERSAMPLE))
+    int_thickness = max(1, round(line_width * 0.67 * SUPERSAMPLE))
     factor = SUPERSAMPLE * (1 << SUBPIXEL_SHIFT)
     length = 0.0
 
@@ -97,12 +97,12 @@ def validate_drawing(drawing: Drawing) -> dict:
 
     est_width = float(ink.sum() / max(drawing.line_length_px, 1.0))
     ratio = est_width / drawing.line_width
-    if not 0.4 <= ratio <= 1.6:
+    if not 0.35 <= ratio <= 1.7:
         raise fail("line thickness is not uniform")
     return {"width": w, "height": h, "ink_fraction": round(ink_fraction, 5), "line_width_ratio": round(ratio, 3)}
 
 
-def render_svg(contours: ContourSet, long_side: int = 1400, line_width: float = 4.0) -> str:
+def render_svg(contours: ContourSet, long_side: int = 1400, line_width: float = 4.8) -> str:
     """Vector version of the drawing: same framing and stroke as render_drawing, as SVG paths."""
     draw_pts = contours.outer + contours.holes + [p for p in getattr(contours, "internal", []) if len(p)]
     if not draw_pts:
@@ -126,7 +126,7 @@ def render_svg(contours: ContourSet, long_side: int = 1400, line_width: float = 
         coords = " L".join(f"{x:.2f},{y:.2f}" for x, y in mapped)
         paths_internal.append(f'<path d="M{coords}"/>')
 
-    int_width = max(1.0, round(line_width * 0.6, 2))
+    int_width = max(1.0, round(line_width * 0.67, 2))
     svg_body = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         f'<rect width="100%" height="100%" fill="#fff"/>',

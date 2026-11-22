@@ -43,6 +43,28 @@ class PipelineOutput:
     diagnostics: dict[str, bytes] = field(default_factory=dict)
 
 
+def _chaikin_smooth(pts: np.ndarray, iterations: int = 1, closed: bool = False) -> np.ndarray:
+    """Corner-cutting algorithm to produce smooth, publication-grade technical curves without staircase artifacts."""
+    if len(pts) < 3:
+        return pts
+    curr = pts.copy()
+    for _ in range(iterations):
+        res = []
+        n = len(curr)
+        end = n if closed else n - 1
+        if not closed:
+            res.append(curr[0])
+        for i in range(end):
+            p0 = curr[i]
+            p1 = curr[(i + 1) % n]
+            res.append(0.75 * p0 + 0.25 * p1)
+            res.append(0.25 * p0 + 0.75 * p1)
+        if not closed:
+            res.append(curr[-1])
+        curr = np.array(res, dtype=np.float32)
+    return curr
+
+
 def extract_photo_edges(
     bgr: np.ndarray,
     view_type: str | None = None,
@@ -51,8 +73,8 @@ def extract_photo_edges(
     smoothing_strength: float | None = None,
     texture_suppression: bool | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, bool]:
-    """Extract sharp patent-style edges matching the previous best implementation:
-    Bilateral Filter (d=9) + Canny (L2 gradient), with texture-adaptive noise suppression."""
+    """Extract sharp patent-style edges:
+    Multi-scale Top-Hat/Black-Hat feature extraction + Bilateral Filter + Canny + morphological healing."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
     is_bottom = vt_norm in ("bottom", "bottomview")
@@ -65,14 +87,20 @@ def extract_photo_edges(
 
     if is_textured:
         # Heavily textured surfaces (speaker mesh, fabric, knurling):
-        # Do NOT amplify thread contrast with CLAHE; smooth micro-texture while preserving real physical features
-        default_low = 30.0
-        default_high = 80.0
-        default_sigma = 45.0
-        s_val = float(smoothing_strength if smoothing_strength is not None else default_sigma)
-        low_t = float(edge_low if edge_low is not None else default_low)
-        high_t = float(edge_high if edge_high is not None else default_high)
-        blurred = cv2.bilateralFilter(gray, d=9, sigmaColor=s_val, sigmaSpace=s_val)
+        # Multi-scale feature enhancement: Top-Hat + Black-Hat isolates embossed symbols/grooves
+        s_val = float(smoothing_strength if smoothing_strength is not None else 35.0)
+        low_t = float(edge_low if edge_low is not None else 25.0)
+        high_t = float(edge_high if edge_high is not None else 70.0)
+        blurred = cv2.bilateralFilter(gray, d=7, sigmaColor=s_val, sigmaSpace=s_val)
+        k_hat = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        tophat = cv2.morphologyEx(blurred, cv2.MORPH_TOPHAT, k_hat)
+        blackhat = cv2.morphologyEx(blurred, cv2.MORPH_BLACKHAT, k_hat)
+        struct_enh = cv2.add(tophat, blackhat)
+        enhanced_gray = cv2.addWeighted(blurred, 0.85, struct_enh, 1.15, 0)
+        raw_edges = cv2.Canny(enhanced_gray, int(low_t), int(high_t), L2gradient=True)
+        k_heal = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        photo_edges = cv2.morphologyEx(raw_edges, cv2.MORPH_CLOSE, k_heal)
+        edges_weak = cv2.Canny(enhanced_gray, int(max(8.0, low_t * 0.6)), int(low_t), L2gradient=True)
     else:
         # Standard smooth product baseline (mug, plastic bottle, pitcher, tools):
         default_low = 35.0 if is_bottom else 25.0
@@ -84,10 +112,12 @@ def extract_photo_edges(
         high_t = float(edge_high if edge_high is not None else default_high)
         clahe = cv2.createCLAHE(clipLimit=default_clahe, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
-        blurred = cv2.bilateralFilter(enhanced, d=9, sigmaColor=s_val, sigmaSpace=s_val)
+        blurred = cv2.bilateralFilter(enhanced, d=7, sigmaColor=s_val, sigmaSpace=s_val)
+        raw_edges = cv2.Canny(blurred, int(low_t), int(high_t), L2gradient=True)
+        k_heal = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        photo_edges = cv2.morphologyEx(raw_edges, cv2.MORPH_CLOSE, k_heal)
+        edges_weak = cv2.Canny(blurred, int(max(8.0, low_t * 0.6)), int(low_t), L2gradient=True)
 
-    photo_edges = cv2.Canny(blurred, int(low_t), int(high_t), L2gradient=True)
-    edges_weak = cv2.Canny(blurred, int(max(8.0, low_t * 0.6)), int(low_t), L2gradient=True)
     return photo_edges, gray, blurred, edges_weak, low_t, high_t, is_textured
 
 
@@ -201,11 +231,23 @@ def run_pipeline(
     else:
         mask = raw_mask
 
+    # Morphological mask cleanup to bridge specular chamfers and eliminate small notches
+    k_mask = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_clean = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_mask)
+
+    # Bottom text banner suppression (for cropped mobile UI screenshots)
+    bot_y = int(h * 0.84)
+    row_sum = (mask_clean[bot_y:, :] > 0).sum(axis=1)
+    for r_idx in range(len(row_sum) - 1):
+        if row_sum[r_idx] == 0 and row_sum[r_idx + 1] > 0:
+            mask_clean[bot_y + r_idx:, :] = 0
+            break
+
     # Step 3: Branding cleanup and mask-restricted internal edge extraction
-    branding_regions = detect_branding_regions(bgr, mask)
+    branding_regions = detect_branding_regions(bgr, mask_clean)
 
     # Restrict photo edges to the interior of the product mask (eroded by 2 px)
-    eroded_mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=2)
+    eroded_mask = cv2.erode(mask_clean, np.ones((3, 3), np.uint8), iterations=2)
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
 
     is_bottom_view = vt_norm in ("bottom", "bottomview")
@@ -220,13 +262,14 @@ def run_pipeline(
 
     stage("contour_extraction")
     # Step 4: External product silhouette extracted separately from mask
-    silhouette_contours = extract_contours(mask, keep_openings=settings.keep_openings)
+    silhouette_contours = extract_contours(mask_clean, keep_openings=settings.keep_openings)
     smoothed_outer: list[np.ndarray] = []
     for oc in silhouette_contours.outer:
         length = float(cv2.arcLength(oc.astype(np.float32), True))
-        eps_out = 0.0010 * length
+        eps_out = 0.0008 * length
         sm = cv2.approxPolyDP(oc.astype(np.float32), eps_out, True)
-        smoothed_outer.append(sm.reshape(-1, 2).astype(np.float32))
+        smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=True)
+        smoothed_outer.append(smoothed)
 
     # Extract internal structural contours directly from photographic edges (CHAIN_APPROX_NONE restored)
     raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
@@ -240,25 +283,38 @@ def run_pipeline(
 
     for c in raw_int_cnts:
         length = float(cv2.arcLength(c, False))
-        if len(c) < min_cnt_pts:
+        if len(c) < min_cnt_pts or length < 5.0:
             continue
 
+        x_c, y_c, bw_c, bh_c = cv2.boundingRect(c)
+        dist_ends = float(np.linalg.norm(c[0][0] - c[-1][0]))
+
+        # Topological loop closure for buttons, screws, port openings, and rings
+        is_loop = (dist_ends <= 6.0 and len(c) >= 5 and bw_c >= 3 and bh_c >= 3)
+        is_long_line = (length >= max(min_cnt_len, 10.0) and (bw_c >= 5 or bh_c >= 5))
+        is_symbol_stroke = (suppress_tex and length >= 6.0 and bw_c >= 3 and bh_c >= 3 and bw_c <= 0.30 * w and bh_c <= 0.30 * h)
+
         if suppress_tex:
-            x_c, y_c, bw_c, bh_c = cv2.boundingRect(c)
-            # Gentle texture suppression:
-            # 1. ALWAYS preserve compact closed loops (buttons, port openings, screws, jacks)
-            is_compact = (bw_c >= 4 and bh_c >= 4 and bw_c <= 0.40 * w and bh_c <= 0.40 * h and length >= 8.0)
-            # 2. Preserve continuous structural lines
-            is_long_line = (length >= max(min_cnt_len, 8.0) and (bw_c >= 4 or bh_c >= 4))
-            if not (is_compact or is_long_line):
+            diag = float(np.sqrt(bw_c**2 + bh_c**2))
+            is_wandering = (not is_loop) and (length > 3.0 * max(diag, 1.0))
+            if is_wandering:
+                continue
+            if not (is_loop or is_long_line or is_symbol_stroke):
                 continue
         else:
-            if length < min_cnt_len:
+            if not is_loop and length < min_cnt_len:
                 continue
 
         eps_int = eps_scale * length
-        sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
-        pts = sm.reshape(-1, 2).astype(np.float32)
+        if is_loop:
+            c_closed = np.vstack([c, c[0:1]])
+            sm = cv2.approxPolyDP(c_closed.astype(np.float32), eps_int, True)
+            smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=True)
+        else:
+            sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
+            smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=False)
+
+        pts = smoothed.reshape(-1, 2).astype(np.float32)
         if len(pts) >= 2:
             internal_contours.append(pts)
 
@@ -275,7 +331,7 @@ def run_pipeline(
     contours, branding_warnings = clean_branding_and_text(contours, branding_regions, (h, w))
 
     stage("rendering")
-    default_lw = 2.5 if is_textured else settings.drawing_line_width
+    default_lw = 4.8
     effective_line_width = float(line_width if line_width is not None else default_lw)
     drawing = render_drawing(
         contours, long_side=settings.drawing_long_side, line_width=effective_line_width
