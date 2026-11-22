@@ -15,3 +15,5 @@ frontend/.env.local
 .vercel/
 *.pdf
 backend/scratch_test/
+*.onnx
+backend/models/
