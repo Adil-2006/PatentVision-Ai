@@ -29,9 +29,18 @@ class Settings(BaseSettings):
     storage_root: Path = _BACKEND_DIR / "storage"
 
     # Supabase storage integration
-    supabase_url: str | None = None
-    supabase_service_key: str | None = None
-    supabase_bucket: str = "patentvision-files"
+    supabase_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PV_SUPABASE_URL", "SUPABASE_URL"),
+    )
+    supabase_service_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PV_SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_KEY", "SUPABASE_SECRET_KEY"),
+    )
+    supabase_bucket: str = Field(
+        default="patentvision-files",
+        validation_alias=AliasChoices("PV_SUPABASE_BUCKET", "SUPABASE_BUCKET"),
+    )
 
     api_prefix: str = "/api"
 
@@ -85,23 +94,38 @@ class Settings(BaseSettings):
             return [str(v).strip().rstrip("/") for v in value if str(v).strip()]
         raise ValueError("PV_CORS_ORIGINS must be a JSON list or comma-separated URLs")
 
+    @field_validator("cors_origin_regex", mode="before")
+    @classmethod
+    def _clean_cors_origin_regex(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+            text = text[1:-1].strip()
+        return text or None
+
     @property
     def on_vercel(self) -> bool:
         return bool(os.environ.get("VERCEL"))
 
     @property
+    def use_supabase(self) -> bool:
+        if self.storage_backend == "supabase":
+            return True
+        if self.storage_backend in ("local", "blob"):
+            return False
+        return bool(self.supabase_url and self.supabase_service_key)
+
+    @property
     def use_blob(self) -> bool:
         if self.storage_backend == "blob":
             return True
-        if self.storage_backend == "local":
+        if self.storage_backend in ("local", "supabase"):
             return False
-        if self.storage_backend == "supabase":
-            # Supabase uses its own storage backend, not Vercel Blob
+        if self.use_supabase:
             return False
-        # auto mode – prefer Supabase if URL/key present, otherwise Vercel Blob if cred present
         return bool(
-            (self.supabase_url and self.supabase_service_key)
-            or os.environ.get("BLOB_READ_WRITE_TOKEN")
+            os.environ.get("BLOB_READ_WRITE_TOKEN")
             or os.environ.get("VERCEL_BLOB_READ_WRITE_TOKEN")
             or os.environ.get("BLOB_STORE_ID")
         )

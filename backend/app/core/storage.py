@@ -101,18 +101,21 @@ class SupabaseStorage:
 
     def __init__(self) -> None:
         self._client = None
+        self._client_creds: tuple[str, str] | None = None
 
     def _get_client(self):
-        if self._client is not None:
-            return self._client
-        from supabase import create_client  # type: ignore[import]
-
         settings = get_settings()
         if not settings.supabase_url or not settings.supabase_service_key:
             raise RuntimeError(
                 "PV_SUPABASE_URL and PV_SUPABASE_SERVICE_KEY must be set to use Supabase storage"
             )
-        self._client = create_client(settings.supabase_url, settings.supabase_service_key)
+        creds = (settings.supabase_url.rstrip("/"), settings.supabase_service_key)
+        if self._client is not None and self._client_creds == creds:
+            return self._client
+        from supabase import create_client  # type: ignore[import]
+
+        self._client = create_client(creds[0], creds[1])
+        self._client_creds = creds
         return self._client
 
     def _bucket(self):
@@ -124,9 +127,8 @@ class SupabaseStorage:
             # upsert=True overwrites existing objects
             self._bucket().upload(clean, data, {"content-type": content_type, "upsert": "true"})
         except Exception as exc:
-            # Supabase SDK raises generic Exception with a dict message on conflict
-            msg = str(exc)
-            if "already exists" in msg or "23505" in msg:
+            msg = str(exc).lower()
+            if "already exists" in msg or "duplicate" in msg or "23505" in msg:
                 self._bucket().update(clean, data, {"content-type": content_type})
             else:
                 raise
@@ -138,18 +140,22 @@ class SupabaseStorage:
             result = self._bucket().download(clean)
             return bytes(result)
         except Exception as exc:
-            if "not found" in str(exc).lower() or "404" in str(exc):
+            status = getattr(exc, "status", None)
+            msg = str(exc).lower()
+            if str(status) == "404" or "not found" in msg or "not_found" in msg or "404" in msg:
                 raise FileNotFoundError(key) from exc
             raise
 
     def exists(self, key: str) -> bool:
         clean = check_key(key)
-        # list() with a search gives an empty list when the file is absent
-        parent = "/".join(clean.split("/")[:-1])
-        name = clean.split("/")[-1]
+        bucket = self._bucket()
         try:
-            items = self._bucket().list(parent, {"search": name, "limit": 1})
-            return any(item.get("name") == name for item in (items or []))
+            if hasattr(bucket, "exists"):
+                return bool(bucket.exists(clean))
+            parent = "/".join(clean.split("/")[:-1])
+            name = clean.split("/")[-1]
+            items = bucket.list(parent, {"search": name, "limit": 100})
+            return any(item.get("name") == name and item.get("id") is not None for item in (items or []))
         except Exception:
             return False
 
@@ -160,14 +166,33 @@ class SupabaseStorage:
         except Exception:
             pass  # best-effort
 
+    def _collect_files(self, bucket, folder: str) -> list[str]:
+        paths: list[str] = []
+        offset = 0
+        while True:
+            items = bucket.list(folder, {"limit": 100, "offset": offset}) or []
+            for item in items:
+                name = item.get("name")
+                if not name:
+                    continue
+                full = f"{folder}/{name}" if folder else name
+                # Supabase storage list() returns id=None for folder entries.
+                if item.get("id") is None and item.get("metadata") is None:
+                    paths.extend(self._collect_files(bucket, full))
+                else:
+                    paths.append(full)
+            if len(items) < 100:
+                break
+            offset += 100
+        return paths
+
     def delete_tree(self, prefix: str) -> None:
-        clean = check_key(prefix)
+        clean = check_key(prefix).rstrip("/")
         try:
-            items = self._bucket().list(clean)
-            paths = [f"{clean}/{item['name']}" for item in (items or []) if item.get("name")]
-            if paths:
-                for i in range(0, len(paths), 100):
-                    self._bucket().remove(paths[i : i + 100])
+            bucket = self._bucket()
+            paths = self._collect_files(bucket, clean)
+            for i in range(0, len(paths), 100):
+                bucket.remove(paths[i : i + 100])
         except Exception:
             pass  # best-effort
 
@@ -220,10 +245,16 @@ class _Storage:
 
     _local = LocalStorage()
     _blob = BlobStorage()
+    _supabase = SupabaseStorage()
 
     @property
     def backend(self) -> StorageBackend:
-        return self._blob if get_settings().use_blob else self._local
+        settings = get_settings()
+        if settings.use_supabase:
+            return self._supabase
+        if settings.use_blob:
+            return self._blob
+        return self._local
 
     @property
     def root(self) -> Path:  # local backend only (tests, dev tooling)

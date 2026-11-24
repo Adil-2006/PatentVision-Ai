@@ -160,3 +160,81 @@ def test_vercel_request_headers_reach_sync_routes():
     c = TestClient(app)
     assert c.get("/api/whoami", headers={"x-vercel-oidc-token": "tok-123"}).json() == {"token": "tok-123"}
     assert c.get("/whoami").json() == {"token": None}
+
+
+def test_supabase_config_aliases_and_cors_regex_quotes(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("PV_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("PV_SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("PV_STORAGE_BACKEND", "auto")
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "sb_secret_test")
+    monkeypatch.setenv("PV_CORS_ORIGIN_REGEX", r'"^https://.*\.vercel\.app$"')
+    s = Settings()
+    assert s.supabase_url == "https://example.supabase.co"
+    assert s.supabase_service_key == "sb_secret_test"
+    assert s.use_supabase is True
+    assert s.use_blob is False
+    assert s.cors_origin_regex == r"^https://.*\.vercel\.app$"
+
+
+class FakeSupabaseBucket:
+    def __init__(self):
+        self.files: dict[str, tuple[bytes, str]] = {}
+
+    def upload(self, path, data, opts=None):
+        self.files[path] = (bytes(data), (opts or {}).get("content-type", "application/octet-stream"))
+
+    def update(self, path, data, opts=None):
+        self.upload(path, data, opts)
+
+    def download(self, path):
+        if path not in self.files:
+            raise RuntimeError("404 not_found")
+        return self.files[path][0]
+
+    def exists(self, path):
+        return path in self.files
+
+    def remove(self, paths):
+        for p in paths:
+            self.files.pop(p, None)
+
+    def list(self, folder="", opts=None):
+        prefix = folder.rstrip("/") + "/" if folder else ""
+        seen_folders = set()
+        items = []
+        for path in sorted(self.files):
+            if not path.startswith(prefix):
+                continue
+            rest = path[len(prefix) :]
+            if "/" in rest:
+                sub = rest.split("/", 1)[0]
+                if sub not in seen_folders:
+                    seen_folders.add(sub)
+                    items.append({"name": sub, "id": None, "metadata": None})
+            else:
+                items.append({"name": rest, "id": path, "metadata": {"size": len(self.files[path][0])}})
+        return items
+
+
+def test_full_flow_on_supabase_storage(client, auth, project, organizer_photo, monkeypatch):
+    from app.core.storage import storage
+
+    fake_bucket = FakeSupabaseBucket()
+    monkeypatch.setattr(storage._supabase, "_bucket", lambda: fake_bucket)
+    monkeypatch.setattr(get_settings(), "storage_backend", "supabase")
+
+    assert client.get("/api/meta").json()["storage"] == "supabase"
+    iid = upload(client, auth, project["id"], organizer_photo[2]).json()["id"]
+    uploads = [p for p in fake_bucket.files if p.startswith(f"uploads/{project['id']}/")]
+    assert len(uploads) == 1 and fake_bucket.files[uploads[0]] == (organizer_photo[2], "image/png")
+
+    r = client.post(f"/api/ai/process/{iid}", headers=auth)
+    assert r.status_code == 200 and r.json()["status"] == "Completed"
+    generated = sorted(p.rsplit("/", 1)[1] for p in fake_bucket.files if p.startswith(f"generated/{project['id']}/{iid}/"))
+    assert generated == ["background_removed.png", "drawing.png", "drawing.svg", "mask.png", "outline.png"]
+
+    assert client.delete(f"/api/projects/{project['id']}", headers=auth).status_code == 204
+    assert fake_bucket.files == {}

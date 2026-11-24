@@ -19,7 +19,7 @@ def meta():
     return {
         "max_upload_bytes": s.max_upload_bytes,
         "accepted_types": ["image/jpeg", "image/png", "image/webp"],
-        "storage": "blob" if s.use_blob else "local",
+        "storage": "supabase" if s.use_supabase else ("blob" if s.use_blob else "local"),
     }
 
 
