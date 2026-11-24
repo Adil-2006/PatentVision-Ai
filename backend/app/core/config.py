@@ -28,7 +28,11 @@ class Settings(BaseSettings):
     storage_backend: str = "auto"
     storage_root: Path = _BACKEND_DIR / "storage"
 
-    # Added for Supabase integration\n    supabase_url: str | None = None\n    supabase_service_key: str | None = None\n    supabase_bucket: str = \"patentvision-files\"\n
+    # Supabase storage integration
+    supabase_url: str | None = None
+    supabase_service_key: str | None = None
+    supabase_bucket: str = "patentvision-files"
+
     api_prefix: str = "/api"
 
     secret_key: str = "dev-insecure-secret-change-me"
