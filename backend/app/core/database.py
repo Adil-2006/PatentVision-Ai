@@ -24,12 +24,17 @@ def normalize_url(url: str) -> str:
 def _make_engine() -> Engine:
     url = normalize_url(get_settings().database_url)
     if url.startswith("sqlite"):
-        engine = create_engine(url, connect_args={"check_same_thread": False})
+        engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
 
         @event.listens_for(engine, "connect")
         def _enable_foreign_keys(dbapi_conn, _record):  # pragma: no cover - trivial
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
+            cur.execute("PRAGMA busy_timeout=15000")
+            try:
+                cur.execute("PRAGMA journal_mode=WAL")
+            except Exception:
+                pass
             cur.close()
 
         return engine

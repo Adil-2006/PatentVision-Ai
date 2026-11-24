@@ -15,6 +15,7 @@ import cv2
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.ai.background import BackgroundRemover, get_background_remover
 from app.ai.contour import ContourSet
 from app.ai.errors import PipelineError
 from app.ai.pipeline import run_pipeline
@@ -52,6 +53,12 @@ def _job_slots() -> threading.BoundedSemaphore:
 def _segmenter(kind: str, checkpoint: str | None, model_type: str) -> Segmenter:
     """One segmenter per config so heavyweight models load once and are reused."""
     return get_segmenter(kind, checkpoint, model_type)
+
+
+@lru_cache
+def _remover(kind: str) -> BackgroundRemover:
+    """One background remover per config so u2net weights stay warm across views."""
+    return get_background_remover(kind)
 
 
 def generated_prefix(image: Image) -> str:
@@ -208,6 +215,7 @@ def _execute(
             storage.read_bytes(image.storage_key),
             settings,
             on_stage=lambda s: current.update(stage=s),
+            remover=_remover(settings.background_remover),
             segmenter=_segmenter(settings.segmenter, settings.sam_checkpoint, settings.sam_model_type),
             view_type=image.view_type,
             product_description=product_desc,
@@ -244,7 +252,8 @@ def _execute(
         result.error_message = result.failed_stage = None
         job.error_message = job.failed_stage = None
 
-        image.processing_status = job.job_status = result.status = "Completed"
+        final_status = "Review required" if result.quality_status == "review_required" else "Completed"
+        image.processing_status = job.job_status = result.status = final_status
 
         job.completed_at = utcnow()
         db.commit()

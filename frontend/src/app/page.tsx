@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { Dashboard, ImageStatus } from "@/lib/types";
 
-const STATUSES: ImageStatus[] = ["Uploaded", "Queued", "Processing", "Completed", "Failed"];
+const STATUSES: ImageStatus[] = ["Uploaded", "Queued", "Processing", "Review required", "Completed", "Failed"];
 
 function DashboardView() {
   const user = useUser();
@@ -53,7 +53,7 @@ function DashboardView() {
     `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const completed = data?.status_counts.Completed ?? 0;
-  const failed = data?.status_counts.Failed ?? 0;
+  const failed = (data?.status_counts.Failed ?? 0) + (data?.status_counts["Review required"] ?? 0);
 
   return (
     <div className="space-y-10">

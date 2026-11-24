@@ -103,7 +103,12 @@ def _center_prior_grabcut(bgr: np.ndarray, view_type: str | None = None) -> np.n
     return fg
 
 
-def _grabcut(bgr: np.ndarray, box: Box, foreground: np.ndarray) -> np.ndarray | None:
+def _grabcut(
+    bgr: np.ndarray,
+    box: Box,
+    foreground: np.ndarray,
+    preserve_border: bool = False,
+) -> np.ndarray | None:
     h, w = foreground.shape
     s = min(1.0, GRABCUT_MAX_SIDE / max(h, w))
     sw, sh = max(1, round(w * s)), max(1, round(h * s))
@@ -118,12 +123,13 @@ def _grabcut(bgr: np.ndarray, box: Box, foreground: np.ndarray) -> np.ndarray | 
     gc[fg > 0] = cv2.GC_PR_FGD
     gc[sure_fg > 0] = cv2.GC_FGD
 
-    # Canvas border margins are definite background
-    m = max(2, int(0.03 * min(sh, sw)))
-    gc[:m, :] = cv2.GC_BGD
-    gc[-m:, :] = cv2.GC_BGD
-    gc[:, :m] = cv2.GC_BGD
-    gc[:, -m:] = cv2.GC_BGD
+    # Canvas border margins are definite background unless preserving a validated AI/alpha cutout
+    if not preserve_border:
+        m = max(2, int(0.03 * min(sh, sw)))
+        gc[:m, :] = cv2.GC_BGD
+        gc[-m:, :] = cv2.GC_BGD
+        gc[:, :m] = cv2.GC_BGD
+        gc[:, -m:] = cv2.GC_BGD
 
     if not (gc == cv2.GC_FGD).any():
         ys, xs = np.nonzero(fg)
@@ -162,19 +168,26 @@ class ClassicalSegmenter:
         foreground_name: str = "foreground-mask",
     ) -> list[Candidate]:
         candidates: list[Candidate] = []
-        if foreground_name == "rembg":
+        if foreground_name == "prior-alpha":
+            candidates.append(Candidate("prior-alpha", foreground))
+        elif foreground_name == "rembg":
             candidates.append(Candidate("rembg", foreground))
 
-        refined = _grabcut(bgr, box, foreground)
+        refined = _grabcut(
+            bgr,
+            box,
+            foreground,
+            preserve_border=foreground_name in ("rembg", "prior-alpha"),
+        )
         if refined is not None:
             candidates.append(Candidate("grabcut", refined))
 
-        if view_type:
+        if view_type and foreground_name != "prior-alpha":
             center_cand = _center_prior_grabcut(bgr, view_type)
             if center_cand is not None:
                 candidates.append(Candidate("center-grabcut", center_cand))
 
-        if foreground_name != "rembg":
+        if foreground_name not in ("rembg", "prior-alpha"):
             candidates.append(Candidate("foreground-mask", foreground))
         return candidates
 

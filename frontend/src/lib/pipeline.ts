@@ -11,6 +11,16 @@ export const STAGES = [
   { key: "output_validation", label: "Check output" },
 ] as const;
 
+export const WORKFLOW_STEPS = [
+  "Image uploaded",
+  "Removing background",
+  "Background removal completed",
+  "Extracting structural details",
+  "Generating technical drawing",
+  "Validating drawing quality",
+  "Ready for review",
+] as const;
+
 export type StageState = "done" | "failed" | "active" | "pending";
 
 /** Per-stage state for the pipeline stepper, derived from the job status and the failed stage. */
@@ -18,6 +28,7 @@ export function stageStates(status: ImageStatus, failedStage: string | null): St
   const n = STAGES.length;
   switch (status) {
     case "Completed":
+    case "Review required":
       return Array(n).fill("done");
     case "Queued":
     case "Processing":
@@ -33,5 +44,20 @@ export function stageStates(status: ImageStatus, failedStage: string | null): St
     }
     default:
       return Array(n).fill("pending");
+  }
+}
+
+/** Return the active 0-based milestone index across the 7 user-facing workflow steps. */
+export function workflowStepIndex(status: ImageStatus, hasBgRemoved: boolean): number {
+  switch (status) {
+    case "Completed":
+    case "Review required":
+      return WORKFLOW_STEPS.length - 1;
+    case "Queued":
+      return 1;
+    case "Processing":
+      return hasBgRemoved ? 3 : 1;
+    default:
+      return 0;
   }
 }

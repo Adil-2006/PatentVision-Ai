@@ -75,6 +75,7 @@ def upload_image(
             if old_key:
                 storage.delete(old_key)
             storage.delete_tree(f"generated/{project.id}/{old_id}")
+            storage.delete_tree(f"diagnostics/{project.id}/{old_id}")
 
     key = f"uploads/{project.id}/{uuid.uuid4().hex}.{info.ext}"
     storage.save_bytes(key, data, info.mime_type)  # original bytes are preserved untouched
@@ -206,7 +207,7 @@ def review_image(
             and image.result.patent_drawing_path
             and storage.exists(image.result.patent_drawing_path)
         )
-        if image.processing_status != "Completed" or not has_drawing:
+        if image.processing_status not in ("Completed", "Review required") or not has_drawing:
             raise ApiError(
                 400,
                 "cannot_approve",
@@ -267,16 +268,18 @@ def list_diagnostics(
     image = get_owned_image(db, user, image_id)
     stages = [
         {"stage": "original_image", "label": "1. Original Photograph"},
-        {"stage": "segmentation_mask", "label": "2. Solid Segmentation Mask"},
-        {"stage": "segmentation_overlay", "label": "3. Segmentation Overlay"},
-        {"stage": "grayscale_image", "label": "4. Preprocessed Grayscale"},
-        {"stage": "smoothed_image", "label": "5. Smoothed Edge-Preserving Image"},
-        {"stage": "weak_edges", "label": "6. Weak-Edge Map"},
-        {"stage": "strong_edges", "label": "7. Strong-Edge Map"},
-        {"stage": "structural_edges", "label": "8. Filtered Structural Details"},
-        {"stage": "external_silhouette", "label": "9. External Product Silhouette"},
-        {"stage": "combined_edges", "label": "10. Combined Technical Edges"},
-        {"stage": "patent_drawing", "label": "11. Final Patent Illustration"},
+        {"stage": "background_removed", "label": "2. Background-Removed Cutout (RGBA)"},
+        {"stage": "background_removed_preview", "label": "3. Background-Removed Preview"},
+        {"stage": "segmentation_mask", "label": "4. Solid Segmentation Mask"},
+        {"stage": "segmentation_overlay", "label": "5. Segmentation Overlay"},
+        {"stage": "grayscale_image", "label": "6. Preprocessed Grayscale"},
+        {"stage": "smoothed_image", "label": "7. Smoothed Edge-Preserving Image"},
+        {"stage": "weak_edges", "label": "8. Weak-Edge Map"},
+        {"stage": "strong_edges", "label": "9. Strong-Edge Map"},
+        {"stage": "structural_edges", "label": "10. Filtered Structural Details"},
+        {"stage": "external_silhouette", "label": "11. External Product Silhouette"},
+        {"stage": "combined_edges", "label": "12. Combined Technical Edges"},
+        {"stage": "patent_drawing", "label": "13. Final Patent Illustration"},
         {"stage": "original_normalized", "label": "Original Normalized"},
         {"stage": "photo_edges", "label": "Detected Edges"},
         {"stage": "denoised_image", "label": "Denoised Image"},

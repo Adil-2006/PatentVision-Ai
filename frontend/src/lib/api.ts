@@ -47,7 +47,12 @@ export async function toApiError(res: Response): Promise<ApiError> {
   } catch {
     /* fall through */
   }
-  return new ApiError(`Request failed (${res.status}).`, res.status, "error");
+  return new ApiError(
+    `Request failed (${res.status}).`,
+    res.status,
+    "error",
+    res.status >= 500 ? "Ensure the PatentVision backend is running and check backend logs." : undefined,
+  );
 }
 
 async function send(path: string, init: RequestInit = {}): Promise<Response> {

@@ -1,6 +1,11 @@
-"""End-to-end pipeline:
-load -> background removal -> localization -> segmentation -> mask validation ->
-contour extraction/smoothing -> branding cleanup -> rendering -> output validation.
+"""End-to-end two-stage pipeline:
+Stage 1 (Background Removal & Validation):
+  load & detect existing transparency -> automatic background removal -> localization ->
+  segmentation -> mask validation -> save background-removed RGBA cutout & preview.
+Stage 2 (Patent Technical Drawing Generation from Isolated Product):
+  mask-isolated detail-preserving edge extraction on original photo -> outer silhouette extraction ->
+  internal structural contour extraction -> combine contours -> branding cleanup ->
+  rendering (PNG + SVG) -> measurable quality & output validation.
 """
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -8,13 +13,20 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from app.ai.background import BackgroundRemover, ClassicalBackgroundRemover, RembgBackgroundRemover, cutout_rgba, get_background_remover
+from app.ai.background import (
+    BackgroundRemover,
+    ClassicalBackgroundRemover,
+    RembgBackgroundRemover,
+    cutout_preview_bgr,
+    cutout_rgba,
+    get_background_remover,
+)
 from app.ai.branding import clean_branding_and_text, detect_branding_regions
 from app.ai.contour import ContourSet, extract_contours
 from app.ai.errors import PipelineError
 from app.ai.imaging import encode_png, load_image, scale_box
 from app.ai.localization import gap_for, localize_product
-from app.ai.mask_validation import choose_mask
+from app.ai.mask_validation import assess_border_cropping, choose_mask
 from app.ai.rendering import overlay_outline, render_drawing, render_svg, validate_drawing
 from app.ai.segmentation import Segmenter, get_segmenter
 from app.core.config import Settings, get_settings
@@ -184,34 +196,13 @@ def run_pipeline(
     loaded = load_image(data, settings.processing_max_side)
     bgr = loaded.bgr
     w, h = loaded.size
-
-    # Step 1: Extract genuine photographic edges (Previous best baseline restored)
-    photo_edges, gray, smoothed, edges_weak, low_t, high_t, is_textured = extract_photo_edges(
-        bgr,
-        view_type=view_type,
-        edge_low=edge_low,
-        edge_high=edge_high,
-        smoothing_strength=smoothing_strength,
-        texture_suppression=texture_suppression,
-    )
-
-    stage("background_removal")
     vt_norm = (view_type or "").strip().lower().replace("_", "").replace(" ", "")
-    if vt_norm in ("perspective", "perspectiveview"):
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        skin_raw = cv2.inRange(hsv, np.array([0, 45, 60]), np.array([22, 210, 255]))
-        skin_strict = (skin_raw > 0) & (hsv[:, :, 1] > 50)
-        skin_strict[int(h * 0.55):, :] = 0
-        if skin_strict.sum() > 4000:
-            kernel_s = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-            skin_dil = cv2.dilate(skin_strict.astype(np.uint8) * 255, kernel_s)
-            bgr_clean = bgr.copy()
-            bgr_clean[skin_dil > 0] = [245, 245, 245]
-            foreground = remover.remove(bgr_clean, loaded.prior_mask)
-        else:
-            foreground = remover.remove(bgr, loaded.prior_mask)
-    else:
-        foreground = remover.remove(bgr, loaded.prior_mask)
+
+    # STAGE 1: Mandatory Automatic Background Removal (or Transparency Validation) BEFORE Edge/Drawing Extraction
+    stage("background_removal")
+    foreground = remover.remove(bgr, loaded.prior_mask)
+    bg_method = getattr(remover, "last_method", "prior_alpha" if loaded.has_transparency else "classical")
+    bg_fallback = bool(getattr(remover, "fallback_used", False))
 
     stage("localization")
     loc = localize_product(foreground)
@@ -219,7 +210,12 @@ def run_pipeline(
         raise PipelineError("localization", "Detector and segmenter coordinate spaces do not match.")
 
     stage("segmentation")
-    fg_name = "rembg" if isinstance(remover, RembgBackgroundRemover) else "foreground-mask"
+    if loaded.has_transparency:
+        fg_name = "prior-alpha"
+    elif bg_method == "rembg":
+        fg_name = "rembg"
+    else:
+        fg_name = "foreground-mask"
     candidates = segmenter.segment(bgr, loc.box, loc.foreground, view_type=view_type, foreground_name=fg_name)
 
     stage("mask_validation")
@@ -243,11 +239,42 @@ def run_pipeline(
             mask_clean[bot_y + r_idx:, :] = 0
             break
 
-    # Step 3: Branding cleanup and mask-restricted internal edge extraction
+    # Build validated Stage 1 outputs (background-removed RGBA cutout & white-matte preview)
+    cutout_rgba_img = cutout_rgba(bgr, mask_clean)
+    cutout_preview_img = cutout_preview_bgr(bgr, mask_clean)
+    cutout_rgba_bytes = encode_png(cutout_rgba_img)
+    cutout_preview_bytes = encode_png(cutout_preview_img)
+
+    # STAGE 2: Detail-Preserving Edge & Structural Contour Extraction from Original Photo (Mask-Restricted)
+    stage("contour_extraction")
+    # Isolate original photo pixels inside the validated foreground mask with rim-matched exterior
+    # so room walls/furniture outside the mask never bleed into CLAHE or bilateral smoothing.
+    eroded_rim = cv2.erode(mask_clean, np.ones((3, 3), np.uint8), iterations=1)
+    rim_pixels = (mask_clean > 0) & (eroded_rim == 0)
+    fill_color = (
+        np.median(bgr[rim_pixels], axis=0).astype(np.uint8)
+        if rim_pixels.any()
+        else np.array([255, 255, 255], np.uint8)
+    )
+    bgr_isolated = np.empty_like(bgr)
+    bgr_isolated[:, :] = fill_color
+    keep_region = cv2.dilate(mask_clean, np.ones((3, 3), np.uint8), iterations=1) > 0
+    bgr_isolated[keep_region] = bgr[keep_region]
+
+    photo_edges, gray, smoothed, edges_weak, low_t, high_t, is_textured = extract_photo_edges(
+        bgr_isolated,
+        view_type=view_type,
+        edge_low=edge_low,
+        edge_high=edge_high,
+        smoothing_strength=smoothing_strength,
+        texture_suppression=texture_suppression,
+    )
+
     branding_regions = detect_branding_regions(bgr, mask_clean)
 
-    # Restrict photo edges to the interior of the product mask (eroded by 2 px)
-    eroded_mask = cv2.erode(mask_clean, np.ones((3, 3), np.uint8), iterations=2)
+    # Restrict photo edges strictly inside the interior of the validated product mask
+    erode_iters = max(2, round(min(h, w) / 150)) if min(h, w) >= 600 else 2
+    eroded_mask = cv2.erode(mask_clean, np.ones((3, 3), np.uint8), iterations=erode_iters)
     internal_edges = cv2.bitwise_and(photo_edges, photo_edges, mask=eroded_mask)
 
     is_bottom_view = vt_norm in ("bottom", "bottomview")
@@ -260,8 +287,7 @@ def run_pipeline(
         if stats_ie[i, cv2.CC_STAT_AREA] >= min_area:
             clean_internal[labels_ie == i] = 255
 
-    stage("contour_extraction")
-    # Step 4: External product silhouette extracted separately from mask
+    # External product silhouette extracted separately from validated Stage 1 mask
     silhouette_contours = extract_contours(mask_clean, keep_openings=settings.keep_openings)
     smoothed_outer: list[np.ndarray] = []
     for oc in silhouette_contours.outer:
@@ -271,7 +297,7 @@ def run_pipeline(
         smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=True)
         smoothed_outer.append(smoothed)
 
-    # Extract internal structural contours directly from photographic edges (CHAIN_APPROX_NONE restored)
+    # Extract internal structural contours directly from photographic edges
     raw_int_cnts, _ = cv2.findContours(clean_internal, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     internal_contours: list[np.ndarray] = []
     default_min_len = 20.0 if is_bottom_view else (8.0 if is_textured else 5.0)
@@ -309,16 +335,16 @@ def run_pipeline(
         if is_loop:
             c_closed = np.vstack([c, c[0:1]])
             sm = cv2.approxPolyDP(c_closed.astype(np.float32), eps_int, True)
-            smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=True)
+            smoothed_c = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=True)
         else:
             sm = cv2.approxPolyDP(c.astype(np.float32), eps_int, False)
-            smoothed = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=False)
+            smoothed_c = _chaikin_smooth(sm.reshape(-1, 2).astype(np.float32), iterations=1, closed=False)
 
-        pts = smoothed.reshape(-1, 2).astype(np.float32)
+        pts = smoothed_c.reshape(-1, 2).astype(np.float32)
         if len(pts) >= 2:
             internal_contours.append(pts)
 
-    # Step 5: Combine external silhouette and internal structural lines
+    # Combine external silhouette and internal structural lines
     has_internal_active = view_type is not None or getattr(settings, "preserve_internal_features", False)
 
     contours = ContourSet(
@@ -340,23 +366,25 @@ def run_pipeline(
         contours, long_side=settings.drawing_long_side, line_width=effective_line_width
     ).encode("utf-8")
 
-    # Step 6: Build all 11 diagnostic visualizations (PART 7)
+    # Build diagnostic visualizations (including Stage 1 background-removed cutout & preview)
     sil_canvas = np.full((h, w), 255, np.uint8)
     for c in contours.outer + contours.holes:
         pts = np.round(c).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(sil_canvas, [pts], isClosed=True, color=0, thickness=2, lineType=cv2.LINE_AA)
 
     comb_canvas = sil_canvas.copy()
-    for c in internal_contours:
+    for c in contours.internal:
         pts = np.round(c).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(comb_canvas, [pts], isClosed=False, color=0, thickness=1, lineType=cv2.LINE_AA)
 
     overlay_diag = overlay_outline(bgr, contours)
 
     diagnostics = {
-        # 11 Standard Diagnostic Stages (Part 7)
+        # Standard Diagnostic Stages
         "original_image": encode_png(bgr),
-        "segmentation_mask": encode_png(mask),
+        "background_removed": cutout_rgba_bytes,
+        "background_removed_preview": cutout_preview_bytes,
+        "segmentation_mask": encode_png(mask_clean),
         "segmentation_overlay": encode_png(overlay_diag),
         "grayscale_image": encode_png(gray),
         "smoothed_image": encode_png(smoothed),
@@ -379,6 +407,11 @@ def run_pipeline(
     stage("output_validation")
     drawing_report = validate_drawing(drawing)
     view_warnings = validate_view_geometry(view_type, contours, (w, h))
+    cropped_edges = assess_border_cropping(mask_clean)
+
+    # Measure short disconnected fragments inside internal contours
+    short_fragments = sum(1 for c in contours.internal if float(cv2.arcLength(c, False)) < 18.0)
+    frag_ratio = round(short_fragments / max(1, len(contours.internal)), 4)
 
     quality_warnings: list[str] = list(branding_warnings) + list(view_warnings)
     chosen_report = next((r for r in reports if r.name == chosen), None)
@@ -391,14 +424,40 @@ def run_pipeline(
             quality_warnings.append(
                 f"Product boundary touches image border ({chosen_report.border_contact * 100:.1f}%)."
             )
-    if chosen == "foreground-mask" and len(reports) > 1 and not isinstance(remover, RembgBackgroundRemover):
+    if bg_fallback:
+        quality_warnings.append("AI background removal was unavailable; fallback classical segmentation used.")
+    if chosen == "foreground-mask" and len(reports) > 1 and bg_method != "rembg":
         quality_warnings.append("Primary segmentation failed; conservative foreground mask used.")
+    if loaded.background_kind == "complex" and bg_method == "classical" and chosen != "center-grabcut" and not loaded.has_transparency:
+        if not any("segmentation" in q.lower() for q in quality_warnings):
+            quality_warnings.append("Complex room background isolated with classical segmentation; inspect boundary accuracy.")
     if len(contours.outer) > 1:
         quality_warnings.append(
             f"Multiple outer components detected ({len(contours.outer)}). User review required."
         )
+    if short_fragments > 65 and frag_ratio > 0.70 and not is_textured:
+        quality_warnings.append(
+            f"Excessive fragmented internal noise detected ({short_fragments} short fragments); inspect detail quality."
+        )
+    if drawing_report.get("ink_fraction", 0.0) < 0.0012:
+        quality_warnings.append("Generated drawing has very low contour completeness; inspect product outline.")
 
     quality_status = "review_required" if quality_warnings else "passed"
+
+    quality_checks = {
+        "input_kind": "transparent_cutout" if loaded.has_transparency else f"{loaded.background_kind}_background",
+        "background_removal_method": bg_method,
+        "foreground_area_ratio": round(float(np.count_nonzero(mask_clean)) / mask_clean.size, 4),
+        "border_contact_ratio": round(chosen_report.border_contact, 4) if chosen_report else 0.0,
+        "cropped_edges": cropped_edges,
+        "contamination_ratio": round(chosen_report.contamination, 4) if chosen_report else 0.0,
+        "outer_components": len(contours.outer),
+        "openings": len(contours.holes),
+        "fragmented_noise_count": short_fragments,
+        "fragmented_noise_ratio": frag_ratio,
+        "ink_fraction": drawing_report.get("ink_fraction"),
+        "line_width_ratio": drawing_report.get("line_width_ratio"),
+    }
 
     metrics = {
         "original_size": list(loaded.original_size),
@@ -407,9 +466,11 @@ def run_pipeline(
         "box": list(loc.box),
         "box_original": list(scale_box(loc.box, 1.0 / loaded.scale)),
         "segmenter": settings.segmenter,
+        "background_remover_method": bg_method,
+        "input_kind": quality_checks["input_kind"],
         "mask_candidate": chosen,
-        "mask_area_ratio": round(float(np.count_nonzero(mask)) / mask.size, 4),
-        "fallback_used": chosen == "foreground-mask" and len(reports) > 1,
+        "mask_area_ratio": quality_checks["foreground_area_ratio"],
+        "fallback_used": (chosen == "foreground-mask" and len(reports) > 1) or bg_fallback,
         "candidates": [r.as_dict() for r in reports],
         "contours": len(contours.outer),
         "openings": len(contours.holes),
@@ -419,6 +480,7 @@ def run_pipeline(
         "branding_regions": [r.as_dict() for r in branding_regions],
         "quality_status": quality_status,
         "quality_warnings": quality_warnings,
+        "quality_checks": quality_checks,
         "detail_level": detail_level or getattr(settings, "drawing_detail_level", "standard"),
         "texture_suppression": suppress_tex,
         "texture_detected": is_textured,
@@ -426,8 +488,8 @@ def run_pipeline(
         "diagnostics": {k: True for k in diagnostics.keys()},
     }
     return PipelineOutput(
-        background_removed=encode_png(cutout_rgba(bgr, foreground)),
-        mask=encode_png(mask),
+        background_removed=cutout_rgba_bytes,
+        mask=encode_png(mask_clean),
         outline=encode_png(overlay_outline(bgr, contours)),
         drawing=encode_png(drawing.image),
         drawing_svg=drawing_svg_bytes,

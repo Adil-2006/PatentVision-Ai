@@ -1,7 +1,11 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+log = logging.getLogger("patentvision.errors")
 
 
 class ApiError(Exception):
@@ -54,4 +58,16 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=422,
             content=_body("validation_error", "Request validation failed.", details=details),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(req: Request, exc: Exception):
+        log.exception("unhandled server error on %s %s", req.method, req.url.path)
+        return JSONResponse(
+            status_code=500,
+            content=_body(
+                "internal_error",
+                "An internal server error occurred while handling the request.",
+                "Check the backend logs and retry.",
+            ),
         )

@@ -110,6 +110,19 @@ def evaluate_mask(name: str, mask: np.ndarray, reference: np.ndarray) -> MaskRep
     return rep
 
 
+def assess_border_cropping(mask: np.ndarray) -> dict[str, float]:
+    """Per-edge contact fraction to detect cropped products or edge-bleeding background artifacts."""
+    h, w = mask.shape[:2]
+    if h == 0 or w == 0:
+        return {"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}
+    return {
+        "top": round(float((mask[0, :] > 0).mean()), 4),
+        "bottom": round(float((mask[-1, :] > 0).mean()), 4),
+        "left": round(float((mask[:, 0] > 0).mean()), 4),
+        "right": round(float((mask[:, -1] > 0).mean()), 4),
+    }
+
+
 def choose_mask(
     candidates, reference: np.ndarray, gap_px: int, keep_openings: bool = False
 ) -> tuple[np.ndarray, str, list[MaskReport]]:
@@ -127,8 +140,12 @@ def choose_mask(
             n_c, _, _, _ = cv2.connectedComponentsWithStats(cleaned, connectivity=8)
             num_components = max(1, n_c - 1)
             comp_penalty = 3.0 * (num_components - 1)
-            pref_bonus = -0.30 if cand.name == "rembg" else (-0.15 if cand.name == "grabcut" else 0.0)
-            score = comp_penalty + 1.5 * rep.contamination + 2.0 * rep.border_contact - 0.5 * rep.box_iou + pref_bonus
+            pref_bonus = {
+                "prior-alpha": -0.65,
+                "rembg": -0.55,
+                "grabcut": -0.15,
+            }.get(cand.name, 0.0)
+            score = comp_penalty + 1.5 * rep.contamination + 4.0 * rep.border_contact - 0.5 * rep.box_iou + pref_bonus
             valid_candidates.append((score, cleaned, cand.name))
 
     if valid_candidates:

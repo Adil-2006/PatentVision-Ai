@@ -17,11 +17,46 @@ class LoadedImage:
     prior_mask: np.ndarray | None  # H x W uint8 0/255 when the source had real transparency
     original_size: tuple[int, int]  # (width, height) after EXIF orientation
     scale: float  # processed / original
+    has_transparency: bool = False
+    background_kind: str = "complex"  # transparent | plain | complex
 
     @property
     def size(self) -> tuple[int, int]:
         h, w = self.bgr.shape[:2]
         return w, h
+
+
+def _extract_alpha_prior(alpha: np.ndarray) -> np.ndarray | None:
+    """Validate and extract foreground mask from an existing alpha channel using hysteresis."""
+    if not ((alpha < 250).mean() > 0.01 and (alpha > 128).any()):
+        return None
+    core = np.where(alpha > 128, 255, 0).astype(np.uint8)
+    weak = np.where(alpha >= 20, 255, 0).astype(np.uint8)
+    n_w, labels_w, _, _ = cv2.connectedComponentsWithStats(weak, connectivity=8)
+    prior = np.zeros_like(core)
+    for i in range(1, n_w):
+        comp = labels_w == i
+        if np.any(core[comp]):
+            prior[comp] = 255
+    return prior if prior.any() else core
+
+
+def classify_background(bgr: np.ndarray, prior_mask: np.ndarray | None) -> str:
+    """Classify the source background as 'transparent', 'plain', or 'complex'."""
+    if prior_mask is not None:
+        return "transparent"
+    h, w = bgr.shape[:2]
+    ring = max(4, int(0.04 * min(h, w)))
+    border = np.ones((h, w), dtype=bool)
+    border[ring : max(ring + 1, h - ring), ring : max(ring + 1, w - ring)] = False
+    lab = cv2.cvtColor(cv2.GaussianBlur(bgr, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    samples = lab[border]
+    if len(samples) == 0:
+        return "complex"
+    std_norm = float(np.linalg.norm(np.std(samples, axis=0)))
+    q75, q25 = np.percentile(samples, [75, 25], axis=0)
+    iqr_norm = float(np.linalg.norm(q75 - q25))
+    return "plain" if (std_norm < 18.0 and iqr_norm < 16.0) else "complex"
 
 
 def load_image(data: bytes, max_side: int) -> LoadedImage:
@@ -38,9 +73,8 @@ def load_image(data: bytes, max_side: int) -> LoadedImage:
 
     arr = np.asarray(rgba)
     alpha = arr[:, :, 3]
-    prior = None
-    if has_alpha and (alpha < 250).mean() > 0.01 and (alpha > 128).any():
-        prior = np.where(alpha > 128, 255, 0).astype(np.uint8)
+    prior = _extract_alpha_prior(alpha) if has_alpha else None
+    has_transparency = prior is not None
 
     rgb = arr[:, :, :3].astype(np.float32)
     a = (alpha.astype(np.float32) / 255.0)[:, :, None]
@@ -55,7 +89,15 @@ def load_image(data: bytes, max_side: int) -> LoadedImage:
         bgr = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
         if prior is not None:
             prior = cv2.resize(prior, (nw, nh), interpolation=cv2.INTER_NEAREST)
-    return LoadedImage(bgr=bgr, prior_mask=prior, original_size=(w, h), scale=scale)
+    bg_kind = classify_background(bgr, prior)
+    return LoadedImage(
+        bgr=bgr,
+        prior_mask=prior,
+        original_size=(w, h),
+        scale=scale,
+        has_transparency=has_transparency,
+        background_kind=bg_kind,
+    )
 
 
 def encode_png(img: np.ndarray) -> bytes:

@@ -174,22 +174,32 @@ def clean_branding_and_text(
     for line_pts in contours.internal:
         lx, ly, lw, lh = cv2.boundingRect(line_pts.astype(np.int32))
         lcx, lcy = lx + lw / 2.0, ly + lh / 2.0
-        # Continuous structural lines spanning across product or large features are never branding
-        if lw > 0.20 * w or lh > 0.20 * h:
-            filtered_internal.append(line_pts)
-            continue
+        arc_len = float(cv2.arcLength(line_pts.astype(np.float32), False))
+        straightness = arc_len / float(max(lw, lh, 1))
 
+        # Check if this contour lies inside a high-confidence printed sticker/text region
         is_branding = False
         for reg in branding_regions:
             if reg.confidence < 0.70:
                 continue
             rx, ry, rw, rh = reg.bbox
-            # If the line spans across most of the candidate box, it is a structural boundary
-            if lw > 0.85 * rw or lh > 0.85 * rh:
+            inside_center = rx - 2 <= lcx <= rx + rw + 2 and ry - 2 <= lcy <= ry + rh + 2
+            contained_in_box = (
+                lx >= rx - 4 and ly >= ry - 4 and lx + lw <= rx + rw + 4 and ly + lh <= ry + rh + 4
+            )
+            # Genuine straight product seams stay intact
+            if (lw > 0.85 * rw or lh > 0.85 * rh) and straightness <= 1.8:
                 continue
-            if rx - 2 <= lcx <= rx + rw + 2 and ry - 2 <= lcy <= ry + rh + 2:
+            if lw > 0.25 * w and lh > 0.25 * h:
+                continue
+            # Suppress text/logos enclosed inside high-confidence sticker regions (even wide words)
+            if reg.confidence >= 0.85 and contained_in_box and (straightness > 2.1 or (lw < 0.82 * rw and lh < 0.82 * rh)):
                 is_branding = True
                 break
+            if lw <= 0.20 * w and lh <= 0.20 * h and inside_center:
+                is_branding = True
+                break
+
         if not is_branding:
             filtered_internal.append(line_pts)
 

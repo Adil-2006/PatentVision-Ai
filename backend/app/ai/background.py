@@ -1,4 +1,7 @@
 """Background removal. Replaceable behind the BackgroundRemover interface."""
+import logging
+import threading
+from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -7,8 +10,27 @@ import numpy as np
 from app.ai.errors import PipelineError
 from app.ai.masks import ellipse, to_binary
 
+log = logging.getLogger("patentvision.background")
+
 L_WEIGHT = 0.6  # de-emphasise lightness so soft shadows are not treated as product
 MIN_THRESHOLD, MAX_THRESHOLD = 14.0, 70.0
+
+_SHARED_REMBG_LOCK = threading.Lock()
+_SHARED_REMBG_SESSION = None
+
+
+def _shared_u2net_session():
+    global _SHARED_REMBG_SESSION
+    with _SHARED_REMBG_LOCK:
+        if _SHARED_REMBG_SESSION is None:
+            import os
+            import rembg
+
+            models_dir = Path(__file__).resolve().parent.parent.parent / "models"
+            if (models_dir / "u2net.onnx").is_file():
+                os.environ["U2NET_HOME"] = str(models_dir)
+            _SHARED_REMBG_SESSION = rembg.new_session("u2net")
+        return _SHARED_REMBG_SESSION
 
 
 class BackgroundRemover(Protocol):
@@ -53,18 +75,75 @@ def otsu_threshold(dist: np.ndarray) -> float:
     return float(np.clip(t, MIN_THRESHOLD, MAX_THRESHOLD))
 
 
+def _low_contrast_white_bg_probe(bgr: np.ndarray, dist: np.ndarray) -> np.ndarray | None:
+    """Rescue low-contrast products on plain/white backgrounds without triggering on blank images."""
+    h, w = bgr.shape[:2]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    # Require real interior structural gradient relative to an almost blank border
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 15, 45)
+    m = max(6, int(0.06 * min(h, w)))
+    interior_edges = edges[m : max(m + 1, h - m), m : max(m + 1, w - m)]
+    if interior_edges.size == 0 or (interior_edges > 0).mean() < 0.003:
+        return None
+    ring = max(4, int(0.03 * min(h, w)))
+    border_mask = np.ones((h, w), dtype=bool)
+    border_mask[ring : max(ring + 1, h - ring), ring : max(ring + 1, w - ring)] = False
+    border_p95 = float(np.percentile(dist[border_mask], 95)) if border_mask.any() else 6.0
+    low_thresh = float(np.clip(max(5.5, border_p95 + 1.5), 5.5, MIN_THRESHOLD))
+    fg_dist = np.where(dist > low_thresh, 255, 0).astype(np.uint8)
+    edge_band = cv2.dilate(edges, ellipse(max(5, min(h, w) // 80)))
+    combined = cv2.bitwise_or(fg_dist, edge_band)
+    combined[:3, :] = combined[-3:, :] = combined[:, :3] = combined[:, -3:] = 0
+    # Flood from outside to fill the interior of closed low-contrast contours
+    pad = cv2.copyMakeBorder(combined, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    cv2.floodFill(pad, None, (0, 0), 128)
+    filled = np.where(pad[1:-1, 1:-1] == 128, 0, 255).astype(np.uint8)
+    filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, ellipse(3))
+    filled = cv2.morphologyEx(filled, cv2.MORPH_CLOSE, ellipse(max(5, min(h, w) // 100)))
+    area_ratio = float(np.count_nonzero(filled)) / max(1, filled.size)
+    if 0.01 <= area_ratio <= 0.90:
+        return filled
+    return None
+
+
+def _hysteresis_alpha_mask(alpha: np.ndarray) -> np.ndarray:
+    """Binarize a soft alpha matte keeping translucent appendages connected to strong foreground core."""
+    core = np.where(alpha >= 110, 255, 0).astype(np.uint8)
+    weak = np.where(alpha >= 10, 255, 0).astype(np.uint8)
+    if not core.any():
+        core = np.where(alpha >= 30, 255, 0).astype(np.uint8)
+    n_w, labels_w, _, _ = cv2.connectedComponentsWithStats(weak, connectivity=8)
+    mask = np.zeros_like(core)
+    for i in range(1, n_w):
+        comp = labels_w == i
+        if np.any(core[comp]):
+            mask[comp] = 255
+    return mask if mask.any() else weak
+
+
 class ClassicalBackgroundRemover:
-    """Border-colour model + Otsu threshold. No model files required."""
+    """Border-colour model + Otsu threshold with white-bg contrast probe. No model files required."""
+
+    def __init__(self) -> None:
+        self.last_method = "classical"
+        self.fallback_used = False
 
     def remove(self, bgr: np.ndarray, prior_mask: np.ndarray | None = None) -> np.ndarray:
+        self.fallback_used = False
         if prior_mask is not None:
+            self.last_method = "prior_alpha"
             mask = to_binary(prior_mask)
         else:
+            self.last_method = "classical"
             dist = background_distance(bgr)
             mask = np.where(dist > otsu_threshold(dist), 255, 0).astype(np.uint8)
             side = min(mask.shape)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ellipse(3))
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ellipse(max(3, side // 150)))
+            if np.count_nonzero(mask) < 0.004 * mask.size:
+                rescued = _low_contrast_white_bg_probe(bgr, dist)
+                if rescued is not None:
+                    mask = rescued
         if not mask.any():
             raise PipelineError(
                 "background_removal",
@@ -75,25 +154,24 @@ class ClassicalBackgroundRemover:
 
 
 class RembgBackgroundRemover:
-    """U-2-Net based AI background removal matching Google Colab prototype."""
+    """U-2-Net based AI background removal with transparent cutout preservation and classical fallback."""
 
     def __init__(self, session=None):
         self._session = session
+        self._lock = threading.Lock()
+        self.last_method = "rembg"
+        self.fallback_used = False
 
     def _get_session(self):
-        if self._session is None:
-            import os
-            from pathlib import Path
-            import rembg
-
-            models_dir = Path(__file__).resolve().parent.parent.parent / "models"
-            if (models_dir / "u2net.onnx").is_file():
-                os.environ["U2NET_HOME"] = str(models_dir)
-            self._session = rembg.new_session("u2net")
-        return self._session
+        with self._lock:
+            if self._session is None:
+                self._session = _shared_u2net_session()
+            return self._session
 
     def remove(self, bgr: np.ndarray, prior_mask: np.ndarray | None = None) -> np.ndarray:
+        self.fallback_used = False
         if prior_mask is not None:
+            self.last_method = "prior_alpha"
             return to_binary(prior_mask)
         try:
             import rembg
@@ -102,7 +180,7 @@ class RembgBackgroundRemover:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             output = rembg.remove(rgb, session=session)
             alpha = output[:, :, 3]
-            _, binary_mask = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
+            binary_mask = _hysteresis_alpha_mask(alpha)
 
             # Keep primary components and drop small stray noise blobs (< 5% of primary)
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -121,11 +199,15 @@ class RembgBackgroundRemover:
 
             if not binary_mask.any():
                 raise PipelineError("background_removal", "No foreground detected by rembg.")
+            self.last_method = "rembg"
             return binary_mask
-        except Exception:
-            # Seamless fallback to classical border-colour + Otsu GrabCut
+        except Exception as exc:
+            log.warning("rembg background removal failed (%s); falling back to classical remover", exc)
             fallback = ClassicalBackgroundRemover()
-            return fallback.remove(bgr, prior_mask)
+            mask = fallback.remove(bgr, prior_mask)
+            self.last_method = "classical_fallback"
+            self.fallback_used = True
+            return mask
 
 
 def get_background_remover(kind: str = "auto") -> BackgroundRemover:
@@ -133,21 +215,33 @@ def get_background_remover(kind: str = "auto") -> BackgroundRemover:
         return ClassicalBackgroundRemover()
     if kind == "rembg":
         return RembgBackgroundRemover()
-    from pathlib import Path
 
     models_dir = Path(__file__).resolve().parent.parent.parent / "models"
-    if (models_dir / "u2net.onnx").is_file():
-        try:
-            import rembg  # noqa: F401
+    try:
+        import onnxruntime  # noqa: F401
+        import rembg  # noqa: F401
 
+        if (models_dir / "u2net.onnx").is_file():
             return RembgBackgroundRemover()
-        except ImportError:
-            pass
-    return ClassicalBackgroundRemover()
+        from rembg.sessions.u2net import U2netSession
 
+        if U2netSession.resolve_existing("u2net.onnx") is not None:
+            return RembgBackgroundRemover()
+        return RembgBackgroundRemover()
+    except ImportError:
+        pass
+    return ClassicalBackgroundRemover()
 
 
 def cutout_rgba(bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Background-removed image: product pixels with the mask as alpha (transparent background)."""
     b, g, r = cv2.split(bgr)
     return cv2.merge([b, g, r, mask])
+
+
+def cutout_preview_bgr(bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Background-removed preview composited onto pure white (#ffffff) background."""
+    preview = np.full_like(bgr, 255)
+    fg = mask > 0
+    preview[fg] = bgr[fg]
+    return preview

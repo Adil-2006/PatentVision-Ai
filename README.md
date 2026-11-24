@@ -24,10 +24,13 @@ vercel.json Vercel Services: full-stack deployment on a unified domain
    - 6. **Top View** (Direct top / plan elevation)
    - 7. **Bottom View** (Direct bottom / underside elevation)
 2. **Single-Session Multi-Photo Upload**: Drop all 7 photos at once with smart filename heuristic mapping (e.g. `front`, `rear`, `right`, `left`, `top`, `bottom`, `perspective`), plus drag-and-drop replacement on individual slots.
-3. **Enhanced AI Image Pipeline**:
+3. **Enhanced AI Image Pipeline — Two-Stage Processing**:
+   - **Stage 1 — Automatic Background Removal**: Every uploaded photo is first processed by a U-2-Net deep-learning segmentation model (via `rembg`) to isolate the product from any background (white, coloured, office/room, floor). The segmented foreground mask is validated for quality, border cropping, and multi-component contamination.
+   - **Stage 2 — Mask-Isolated Edge Extraction**: Canny and Laplacian edge detection run only within the validated product mask, ensuring background edges, shadows, and unrelated objects are never drawn.
    - Advanced background isolation excluding lateral border-touching artifacts (e.g. office chairs, desks) while preserving vertical multi-component assemblies.
    - Surface branding, logo, and printed text detection and suppression (`branding.py`).
    - Structural seam, hole, latch, joint, and knob preservation.
+   - `background_remover_method` metric returned with every AI result (`rembg` | `classical` | `grabcut`).
 4. **Drawing Quality Validation**:
    - Multi-component and boundary contamination metrics.
    - Contaminated or ambiguous drawings are flagged as `Review required` and never falsely marked as `Completed`.
@@ -55,6 +58,8 @@ alembic upgrade head            # apply migrations including 0003_perspective_an
 uvicorn app.main:app --reload
 ```
 
+> **Background removal model**: On first run the backend downloads `u2net.onnx` (~170 MB) from GitHub to `~/.rembg/models/u2net/`. This requires a one-time internet connection. Subsequent runs are offline. If running in an air-gapped environment, manually copy the model file to that path.
+
 ### Frontend (http://localhost:3000)
 
 ```bash
@@ -73,7 +78,7 @@ Runs unit, API, migration, visual regression, quality validation, and end-to-end
 cd backend
 pytest -v
 ```
-*(All 128 tests passing)*
+*(All 130 tests passing)*
 
 ### Frontend Tests (vitest & typecheck)
 ```bash
@@ -148,5 +153,6 @@ All protected routes require `Authorization: Bearer <token>`.
 ## Known Scope & Operating Notes
 
 1. **Drawing Quality & Review**: The pipeline flags surface branding and multi-component silhouettes as `Review required`. Patent professionals should review the drawing on the inspector page (`/images/[id]`) and approve or reprocess before generating the PDF.
-2. **Serverless Limits**: Uploads are capped at 40 MB client-side and optimized in the browser before transfer to satisfy serverless payload limits.
-3. **Legal Disclaimer**: Generated documents include placeholders and drafting notices to emphasize that representation sheets require authorized patent attorney / agent verification before formal submission to intellectual property offices.
+2. **rembg Cold-Start Latency**: The first image processed after server startup loads the U-2-Net ONNX model into memory (~25 s one-time warm-up). Subsequent images are fast (~2–4 s each).
+3. **Serverless Limits**: Uploads are capped at 40 MB client-side and optimized in the browser before transfer to satisfy serverless payload limits.
+4. **Legal Disclaimer**: Generated documents include placeholders and drafting notices to emphasize that representation sheets require authorized patent attorney / agent verification before formal submission to intellectual property offices.
