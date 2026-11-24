@@ -20,7 +20,7 @@ def upgrade() -> None:
             sa.Column("approval_status", sa.String(20), server_default="pending", nullable=False)
         )
         batch.add_column(
-            sa.Column("is_active", sa.Boolean(), server_default=sa.text("1"), nullable=False)
+            sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False)
         )
 
     # 2. Update ai_results table
