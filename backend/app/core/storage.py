@@ -3,6 +3,7 @@
 LocalStorage keeps files under a storage root (development, tests, single-server deployments).
 BlobStorage keeps them in a private Vercel Blob store (serverless deployments); every read goes
 through the API so ownership checks always apply.
+SupabaseStorage keeps files in a Supabase Storage bucket (Render + Supabase deployments).
 """
 import shutil
 from pathlib import Path, PurePosixPath
@@ -88,6 +89,87 @@ class LocalStorage:
         p = self.path(prefix)
         if p.is_dir():
             shutil.rmtree(p, ignore_errors=True)
+
+
+class SupabaseStorage:
+    """Supabase Storage backend for Render deployments.
+
+    Files are stored in a private bucket (``patentvision-files`` by default).
+    Credentials come from ``PV_SUPABASE_URL`` and ``PV_SUPABASE_SERVICE_KEY``.
+    The service-role key is required so the backend can read and write private objects.
+    """
+
+    def __init__(self) -> None:
+        self._client = None
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        from supabase import create_client  # type: ignore[import]
+
+        settings = get_settings()
+        if not settings.supabase_url or not settings.supabase_service_key:
+            raise RuntimeError(
+                "PV_SUPABASE_URL and PV_SUPABASE_SERVICE_KEY must be set to use Supabase storage"
+            )
+        self._client = create_client(settings.supabase_url, settings.supabase_service_key)
+        return self._client
+
+    def _bucket(self):
+        return self._get_client().storage.from_(get_settings().supabase_bucket)
+
+    def save_bytes(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        clean = check_key(key)
+        try:
+            # upsert=True overwrites existing objects
+            self._bucket().upload(clean, data, {"content-type": content_type, "upsert": "true"})
+        except Exception as exc:
+            # Supabase SDK raises generic Exception with a dict message on conflict
+            msg = str(exc)
+            if "already exists" in msg or "23505" in msg:
+                self._bucket().update(clean, data, {"content-type": content_type})
+            else:
+                raise
+        return key
+
+    def read_bytes(self, key: str) -> bytes:
+        clean = check_key(key)
+        try:
+            result = self._bucket().download(clean)
+            return bytes(result)
+        except Exception as exc:
+            if "not found" in str(exc).lower() or "404" in str(exc):
+                raise FileNotFoundError(key) from exc
+            raise
+
+    def exists(self, key: str) -> bool:
+        clean = check_key(key)
+        # list() with a search gives an empty list when the file is absent
+        parent = "/".join(clean.split("/")[:-1])
+        name = clean.split("/")[-1]
+        try:
+            items = self._bucket().list(parent, {"search": name, "limit": 1})
+            return any(item.get("name") == name for item in (items or []))
+        except Exception:
+            return False
+
+    def delete(self, key: str) -> None:
+        clean = check_key(key)
+        try:
+            self._bucket().remove([clean])
+        except Exception:
+            pass  # best-effort
+
+    def delete_tree(self, prefix: str) -> None:
+        clean = check_key(prefix)
+        try:
+            items = self._bucket().list(clean)
+            paths = [f"{clean}/{item['name']}" for item in (items or []) if item.get("name")]
+            if paths:
+                for i in range(0, len(paths), 100):
+                    self._bucket().remove(paths[i : i + 100])
+        except Exception:
+            pass  # best-effort
 
 
 class BlobStorage:

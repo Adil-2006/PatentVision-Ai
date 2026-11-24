@@ -13,6 +13,7 @@ reportlab>=4.0,<6
 vercel>=0.12,<1
 rembg[cpu]>=2.0
 onnxruntime>=1.18
+supabase>=2.0,<3
 
 # Optional: Segment Anything backend (PV_SEGMENTER=sam). Not needed for the default classical segmenter.
 # torch

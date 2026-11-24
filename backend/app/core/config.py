@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     storage_backend: str = "auto"
     storage_root: Path = _BACKEND_DIR / "storage"
 
-    # Public URL prefix the API is mounted under (Vercel routes /api/* to this service). Stripped if present.
+    # Added for Supabase integration\n    supabase_url: str | None = None\n    supabase_service_key: str | None = None\n    supabase_bucket: str = \"patentvision-files\"\n
     api_prefix: str = "/api"
 
     secret_key: str = "dev-insecure-secret-change-me"
@@ -91,8 +91,13 @@ class Settings(BaseSettings):
             return True
         if self.storage_backend == "local":
             return False
+        if self.storage_backend == "supabase":
+            # Supabase uses its own storage backend, not Vercel Blob
+            return False
+        # auto mode – prefer Supabase if URL/key present, otherwise Vercel Blob if cred present
         return bool(
-            os.environ.get("BLOB_READ_WRITE_TOKEN")
+            (self.supabase_url and self.supabase_service_key)
+            or os.environ.get("BLOB_READ_WRITE_TOKEN")
             or os.environ.get("VERCEL_BLOB_READ_WRITE_TOKEN")
             or os.environ.get("BLOB_STORE_ID")
         )

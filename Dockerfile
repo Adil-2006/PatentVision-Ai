@@ -1,9 +1,13 @@
-# Hugging Face Spaces Docker image for the PatentVision AI FastAPI backend.
-# Keep backend/Dockerfile intact for standalone backend/ hosts such as Render.
+# PatentVision AI – FastAPI backend for Render (and compatible hosts).
+# Render injects PORT; the app listens on ${PORT:-8000}.
+# u2netp (4.6 MB ONNX) is pre-baked so cold starts need no runtime download.
+# Peak RSS ~472 MB with NUMBA_DISABLE_JIT=1 and OMP_NUM_THREADS=1 — fits Render free (512 MB).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    NUMBA_DISABLE_JIT=1 \
+    OMP_NUM_THREADS=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
@@ -14,7 +18,7 @@ WORKDIR /tmp/build
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Hugging Face Spaces runs containers as non-root UID 1000.
+# Render (and most cloud hosts) run as non-root UID 1000.
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
@@ -23,8 +27,8 @@ ENV HOME=/home/user \
 
 WORKDIR /home/user/app
 
-# Pre-bake U-2-Net weights into the image so cold wakes need no runtime model download.
-RUN python -c "import rembg; rembg.new_session('u2net')"
+# Pre-bake u2netp weights (4.6 MB) — lighter than u2net (170 MB), fits Render free-tier RAM.
+RUN python -c "import os; os.environ['REMBG_HOME']='/home/user/.rembg'; import rembg; rembg.new_session('u2netp')"
 
 COPY --chown=user:user backend/app ./app
 COPY --chown=user:user backend/alembic ./alembic
@@ -32,6 +36,6 @@ COPY --chown=user:user backend/alembic.ini ./alembic.ini
 
 RUN mkdir -p /home/user/app/storage
 
-# Single worker on purpose: job slots and the rate limiter are in-process.
-EXPOSE 7860
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
+# Run migrations then start the server.  Single worker: job slots and rate limiter are in-process.
+EXPOSE 8000
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
