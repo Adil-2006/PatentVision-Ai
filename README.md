@@ -1,3 +1,13 @@
+---
+title: PatentVision AI Backend
+emoji: 📐
+colorFrom: gray
+colorTo: blue
+sdk: docker
+app_port: 7860
+short_description: FastAPI AI backend for patent technical drawings
+---
+
 # PatentVision AI (v2.1)
 
 Turns photographs of physical products into clean black-and-white, patent-office ready technical drawings and automatically compiles an official 7-page patent representation PDF document.
@@ -70,6 +80,32 @@ npm run dev                     # proxies /api/* to http://127.0.0.1:8000
 
 ---
 
+## Free Cloud Deployment (Hugging Face Spaces + Vercel Hobby)
+
+Because v2.1 runs `rembg` (`u2net.onnx`) + `onnxruntime` + OpenCV, host the Docker backend on **Hugging Face Spaces (16 GB RAM free Docker Space)** and the Next.js frontend on **Vercel Hobby**.
+
+### 1. Backend on Hugging Face Spaces (Docker SDK)
+1. Create a new Space on [huggingface.co/new-space](https://huggingface.co/new-space) selecting **Docker** → **Blank** (`CPU basic · 2 vCPU · 16 GB · FREE`).
+2. Push this repository to the Space git remote (root [Dockerfile](Dockerfile) builds only the backend and pre-bakes `u2net.onnx`):
+   ```bash
+   git remote add space https://huggingface.co/spaces/<your-hf-username>/<your-space-name>
+   git push space main
+   ```
+3. In **Space → Settings → Variables and secrets**, set:
+   - `PV_SECRET_KEY` *(Secret)*: a long random string (32+ chars)
+   - `PV_CORS_ORIGINS` *(Variable)*: your Vercel URL, e.g. `https://patentvision-ai.vercel.app`
+   - `PV_CORS_ORIGIN_REGEX` *(Variable, optional)*: `^https://.*\.vercel\.app$` (allows Vercel preview URLs)
+   - **Recommended for persistence across Space restarts** *(Secrets)*: Free [Neon](https://neon.tech) Postgres `DATABASE_URL` + storage `BLOB_READ_WRITE_TOKEN` (without external DB/storage, Space sleep/rebuilds reset local SQLite files).
+
+### 2. Frontend on Vercel Hobby
+1. Import `Adil-2006/PatentVision-Ai` on [vercel.com/new](https://vercel.com/new).
+2. Set **Root Directory** to `frontend` *(important: do not deploy from repo root, because `rembg` exceeds serverless bundle limits)*.
+3. Add Environment Variable:
+   - `NEXT_PUBLIC_API_URL` = `https://<your-hf-username>-<your-space-name>.hf.space`
+4. Deploy. The Space URL serves `/` and `/health` (`{"status":"ok"}`) and keeps `u2net.onnx` warm while awake.
+
+---
+
 ## Running Automated Tests
 
 ### Backend Tests (pytest)
@@ -78,12 +114,12 @@ Runs unit, API, migration, visual regression, quality validation, and end-to-end
 cd backend
 pytest -v
 ```
-*(All 130 tests passing)*
+*(All 131 tests passing)*
 
 ### Frontend Tests (vitest & typecheck)
 ```bash
 cd frontend
-npm test -- --run               # 45 vitest tests passing
+npm test -- --run               # 46 vitest tests passing
 npm run typecheck               # tsc --noEmit (0 errors)
 npm run build                   # Next.js 15 production build
 ```

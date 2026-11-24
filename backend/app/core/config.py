@@ -1,9 +1,11 @@
+import json
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -59,7 +61,25 @@ class Settings(BaseSettings):
     # A job still Queued/Processing after this long lost its worker (crash, timeout) and is shown as Failed.
     stale_job_minutes: int = 10
 
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_origin_regex: str | None = None
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, value: object) -> list[str]:
+        """Accept either a JSON list or a comma-separated string of origins."""
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(v).strip().rstrip("/") for v in parsed if str(v).strip()]
+            return [part.strip().rstrip("/") for part in raw.split(",") if part.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(v).strip().rstrip("/") for v in value if str(v).strip()]
+        raise ValueError("PV_CORS_ORIGINS must be a JSON list or comma-separated URLs")
 
     @property
     def on_vercel(self) -> bool:

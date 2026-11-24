@@ -76,6 +76,16 @@ describe("api client", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("failed"));
     await expect(api.me()).rejects.toMatchObject({ code: "network", status: 0 });
   });
+  it("strips trailing slashes from NEXT_PUBLIC_API_URL", async () => {
+    vi.resetModules();
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://demo.hf.space/");
+    try {
+      const { API_URL } = await import("./api");
+      expect(API_URL).toBe("https://demo.hf.space");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it("supports 7-view upload, review and document generation methods", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ is_ready_to_process: false, missing_views: ["Front"] }), { status: 200 }),

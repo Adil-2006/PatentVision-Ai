@@ -10,12 +10,27 @@ from tests.conftest import upload
 
 
 def test_routes_answer_with_and_without_api_prefix(client, auth):
+    assert client.get("/").json()["status"] == "ok"
+    assert client.get("/api/").json()["status"] == "ok"
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/api/health").json() == {"status": "ok"}
     pid = client.post("/api/projects", json={"name": "Prefixed"}, headers=auth).json()["id"]
     assert client.get(f"/projects/{pid}", headers=auth).json()["name"] == "Prefixed"
     assert client.get("/api/docs").status_code == 200
     assert client.get("/apiary").status_code == 404  # only a real /api segment is a prefix
+
+
+def test_cors_origins_accepts_csv_and_regex(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("PV_CORS_ORIGINS", "https://app.vercel.app/, http://localhost:3000")
+    monkeypatch.setenv("PV_CORS_ORIGIN_REGEX", r"^https://.*\.vercel\.app$")
+    s = Settings()
+    assert s.cors_origins == ["https://app.vercel.app", "http://localhost:3000"]
+    assert s.cors_origin_regex == r"^https://.*\.vercel\.app$"
+
+    monkeypatch.setenv("PV_CORS_ORIGINS", '["https://custom.example.com/"]')
+    assert Settings().cors_origins == ["https://custom.example.com"]
 
 
 def test_meta_exposes_upload_limits(client):

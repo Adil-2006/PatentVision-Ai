@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 /** Same-origin by default: Vercel routes /api/* to the FastAPI service; `next dev` proxies it locally. */
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "/api").replace(/\/+$/, "");
 const TOKEN_KEY = "pv_token";
 
 export class ApiError extends Error {
@@ -66,7 +66,12 @@ async function send(path: string, init: RequestInit = {}): Promise<Response> {
   try {
     res = await fetch(`${API_URL}${path}`, { ...init, headers });
   } catch {
-    throw new ApiError("Cannot reach the PatentVision server.", 0, "network", "Check that the backend is running.");
+    throw new ApiError(
+      "Cannot reach the PatentVision server.",
+      0,
+      "network",
+      "Check that the backend is running (free hosts like Hugging Face Spaces may take ~30 s to wake from sleep).",
+    );
   }
   if (!res.ok) throw await toApiError(res);
   return res;

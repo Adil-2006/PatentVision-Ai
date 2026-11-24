@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        allow_origin_regex=settings.cors_origin_regex,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
@@ -68,6 +69,10 @@ def create_app() -> FastAPI:
     install_error_handlers(app)
     for router in (auth.router, projects.router, images.router, ai.router, dashboard.router, documents.router):
         app.include_router(router)
+
+    @app.get("/", tags=["meta"])
+    def root():
+        return {"status": "ok", "service": "PatentVision AI"}
 
     @app.get("/health", tags=["meta"])
     def health():
