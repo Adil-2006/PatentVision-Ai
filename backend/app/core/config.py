@@ -74,8 +74,18 @@ class Settings(BaseSettings):
     # A job still Queued/Processing after this long lost its worker (crash, timeout) and is shown as Failed.
     stale_job_minutes: int = 10
 
-    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]
-    cors_origin_regex: str | None = None
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://patent-vision-ai.vercel.app",
+        ],
+        validation_alias=AliasChoices("PV_CORS_ORIGINS", "CORS_ORIGINS"),
+    )
+    cors_origin_regex: str | None = Field(
+        default=r"^https://patent-vision-ai(?:-[a-z0-9-]+)?\.vercel\.app$",
+        validation_alias=AliasChoices("PV_CORS_ORIGIN_REGEX", "CORS_ORIGIN_REGEX"),
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod
