@@ -171,6 +171,8 @@ def run_job(
             _mark_failed(db, image_id, "persistence", "Saving the result failed. Retry processing.")
         finally:
             db.close()
+            import gc
+            gc.collect()
 
 
 def _sanitize_for_json(obj: Any) -> Any:

@@ -74,9 +74,9 @@ class Settings(BaseSettings):
     texture_suppression: bool = False
 
     rate_limit_per_minute: int = 60
-    max_concurrent_jobs: int = 2
+    max_concurrent_jobs: int = 1  # 1 to stay strictly within Render 512 MB free tier RAM
     # A job still Queued/Processing after this long lost its worker (crash, timeout) and is shown as Failed.
-    stale_job_minutes: int = 10
+    stale_job_minutes: int = 2
 
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default=[

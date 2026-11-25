@@ -182,22 +182,16 @@ function ProjectView({ id }: { id: number }) {
   async function runBatch(imagesToProcess: ImageItem[]) {
     if (imagesToProcess.length === 0) return;
     setBatch({ done: 0, total: imagesToProcess.length });
-    const pool = [...imagesToProcess];
     let ok = 0;
     let completed = 0;
 
-    const worker = async () => {
-      while (pool.length > 0) {
-        const item = pool.shift();
-        if (!item) break;
-        const res = await processImageById(item.id);
-        if (res) ok++;
-        completed++;
-        setBatch({ done: completed, total: imagesToProcess.length });
-      }
-    };
+    for (const item of imagesToProcess) {
+      const res = await processImageById(item.id);
+      if (res) ok++;
+      completed++;
+      setBatch({ done: completed, total: imagesToProcess.length });
+    }
 
-    await Promise.all([worker(), worker()]);
     setBatch(null);
     load();
     if (ok === imagesToProcess.length) {

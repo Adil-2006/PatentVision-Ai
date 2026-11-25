@@ -44,6 +44,29 @@ async def lifespan(_: FastAPI):
         settings.storage_root.mkdir(parents=True, exist_ok=True)
     try:
         database.init_db()
+        # Clean up any jobs that were interrupted by a server restart or crash
+        try:
+            from app.models import ACTIVE_STATUSES, Image, ProcessingJob
+            from sqlalchemy import update
+
+            with database.SessionLocal() as db:
+                db.execute(
+                    update(Image)
+                    .where(Image.processing_status.in_(ACTIVE_STATUSES))
+                    .values(processing_status="Failed")
+                )
+                db.execute(
+                    update(ProcessingJob)
+                    .where(ProcessingJob.job_status.in_(ACTIVE_STATUSES))
+                    .values(
+                        job_status="Failed",
+                        error_message="Processing interrupted by server restart. Click Generate to retry.",
+                        failed_stage="server_restart",
+                    )
+                )
+                db.commit()
+        except Exception:
+            log.warning("could not reset interrupted jobs on startup (database may be unconfigured)")
     except Exception:  # surfaced per request instead (e.g. database_not_configured)
         log.exception("database initialisation failed at startup")
     yield
