@@ -17,19 +17,49 @@ MIN_THRESHOLD, MAX_THRESHOLD = 14.0, 70.0
 
 _SHARED_REMBG_LOCK = threading.Lock()
 _SHARED_REMBG_SESSION = None
+_SHARED_REMBG_MODEL: str | None = None
 
 
-def _shared_u2net_session():
-    global _SHARED_REMBG_SESSION
+def _resolve_rembg_model() -> str:
+    """Pick the configured rembg ONNX model, preferring u2netp when u2net is not pre-seeded."""
+    import os
+    from app.core.config import get_settings
+
+    configured = (
+        os.environ.get("PV_REMBG_MODEL")
+        or os.environ.get("REMBG_MODEL")
+        or get_settings().rembg_model
+        or "auto"
+    ).strip().lower()
+    if configured and configured != "auto":
+        return configured
+
+    models_dir = Path(__file__).resolve().parent.parent.parent / "models"
+    if (models_dir / "u2net.onnx").is_file():
+        return "u2net"
+    try:
+        from rembg.sessions.u2net import U2netSession
+
+        if U2netSession.resolve_existing("u2net.onnx") is not None:
+            return "u2net"
+    except Exception:
+        pass
+    return "u2netp"
+
+
+def _shared_u2net_session(model_name: str | None = None):
+    global _SHARED_REMBG_SESSION, _SHARED_REMBG_MODEL
+    target = (model_name or _resolve_rembg_model()).strip().lower()
     with _SHARED_REMBG_LOCK:
-        if _SHARED_REMBG_SESSION is None:
+        if _SHARED_REMBG_SESSION is None or _SHARED_REMBG_MODEL != target:
             import os
             import rembg
 
             models_dir = Path(__file__).resolve().parent.parent.parent / "models"
-            if (models_dir / "u2net.onnx").is_file():
+            if (models_dir / f"{target}.onnx").is_file():
                 os.environ["U2NET_HOME"] = str(models_dir)
-            _SHARED_REMBG_SESSION = rembg.new_session("u2net")
+            _SHARED_REMBG_SESSION = rembg.new_session(target)
+            _SHARED_REMBG_MODEL = target
         return _SHARED_REMBG_SESSION
 
 
@@ -221,11 +251,7 @@ def get_background_remover(kind: str = "auto") -> BackgroundRemover:
         import onnxruntime  # noqa: F401
         import rembg  # noqa: F401
 
-        if (models_dir / "u2net.onnx").is_file():
-            return RembgBackgroundRemover()
-        from rembg.sessions.u2net import U2netSession
-
-        if U2netSession.resolve_existing("u2net.onnx") is not None:
+        if (models_dir / "u2net.onnx").is_file() or (models_dir / "u2netp.onnx").is_file():
             return RembgBackgroundRemover()
         return RembgBackgroundRemover()
     except ImportError:

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     processing_max_side: int = 1600
 
     background_remover: str = "auto"  # auto | rembg | classical
+    rembg_model: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("PV_REMBG_MODEL", "REMBG_MODEL"),
+    )  # auto | u2netp | u2net
     segmenter: str = "classical"  # classical | sam
     sam_checkpoint: str | None = None
     sam_model_type: str = "vit_b"
