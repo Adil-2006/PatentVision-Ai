@@ -1,3 +1,5 @@
+import os
+import sys
 from typing import Literal
 
 from fastapi import APIRouter, Depends
@@ -10,9 +12,22 @@ from app.core.database import get_db
 from app.core.errors import ApiError
 from app.core.ratelimit import rate_limit
 from app.models import ACTIVE_STATUSES, AIResult, Image, Project, User
-from app.schemas import JobOut, ProcessAccepted, ProjectProcessAccepted, ResultOut
+from app.schemas import (
+    JobOut,
+    ProcessAccepted,
+    ProjectProcessAccepted,
+    ProjectProcessStatusOut,
+    ResultOut,
+)
 from app.services.presenters import DOWNLOAD_KINDS, result_out
-from app.services.processing import expire_stale, queue_image, run_job
+from app.services.processing import (
+    expire_stale,
+    get_project_processing_status,
+    queue_image,
+    reset_stuck_project_images,
+    run_job,
+    start_project_processing_job,
+)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -27,10 +42,13 @@ def process_project(
     detail_level: str | None = None,
     texture_suppression: bool | None = None,
     line_width: float | None = None,
+    sync: bool | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Process every image that is not already in flight (so failed views can be re-run)."""
+    """Process every image in the project that needs processing.
+    Runs in background worker thread unless sync=True or in test environment.
+    """
     project = get_owned_project(db, user, project_id)
     expire_stale(db, project.images)
     queued, skipped = [], []
@@ -44,13 +62,59 @@ def process_project(
             skipped.append(image.id)
             continue
         queued.append(image.id)
-        run_job(
-            image.id,
+
+    # Determine whether to run synchronously (tests) or in background (live production)
+    run_sync = sync if sync is not None else ("pytest" in sys.modules or bool(os.environ.get("PYTEST_CURRENT_TEST")))
+
+    if queued:
+        start_project_processing_job(
+            project.id,
+            queued,
             detail_level=detail_level,
             texture_suppression=texture_suppression,
             line_width=line_width,
+            sync=run_sync,
         )
-    return ProjectProcessAccepted(project_id=project.id, queued=queued, skipped=skipped)
+
+    return ProjectProcessAccepted(
+        project_id=project.id,
+        queued=queued,
+        skipped=skipped,
+        status="processing" if queued else "idle",
+        total=len(queued),
+        message=f"Processing started for {len(queued)} view(s)",
+    )
+
+
+@router.get(
+    "/process/project/{project_id}/status",
+    response_model=ProjectProcessStatusOut,
+)
+def get_project_status(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get genuine real-time processing progress for all views in the project."""
+    project = get_owned_project(db, user, project_id)
+    expire_stale(db, project.images)
+    data = get_project_processing_status(db, project.id)
+    return ProjectProcessStatusOut.model_validate(data)
+
+
+@router.post(
+    "/reset-stuck/{project_id}",
+    response_model=dict,
+)
+def reset_stuck_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Unstick any images that were left in Queued or Processing state."""
+    project = get_owned_project(db, user, project_id)
+    count = reset_stuck_project_images(db, project.id)
+    return {"project_id": project.id, "reset_count": count, "message": f"Reset {count} stuck image(s)."}
 
 
 @router.post(
@@ -67,11 +131,15 @@ def process_image(
     min_contour_length: float | None = None,
     texture_suppression: bool | None = None,
     line_width: float | None = None,
+    force: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Run the pipeline for one image and return its final status (Completed or Failed)."""
     image = get_owned_image(db, user, image_id)
+    if force and image.processing_status in ACTIVE_STATUSES:
+        image.processing_status = "Uploaded"
+        db.commit()
     queue_image(db, image)
     run_job(
         image.id,

@@ -26,6 +26,7 @@ import {
   type ImageItem,
   type Project,
   type ProjectDocument,
+  type ProjectProcessStatus,
   type RequiredViewType,
 } from "@/lib/types";
 import {
@@ -84,6 +85,16 @@ function ProjectView({ id }: { id: number }) {
   const [descDirty, setDescDirty] = useState(false);
   const [savingDesc, setSavingDesc] = useState(false);
   const [descSavedToast, setDescSavedToast] = useState(false);
+  const [jobProgress, setJobProgress] = useState<{
+    stage: string;
+    step: number;
+    total: number;
+    view?: string;
+    completed: number;
+    failed: number;
+    inProgress: boolean;
+  } | null>(null);
+  const [resettingStuck, setResettingStuck] = useState(false);
 
   const signatureInputRef = useRef<HTMLInputElement>(null);
 
@@ -161,10 +172,10 @@ function ProjectView({ id }: { id: number }) {
   const setItem = (key: string, patch: Partial<QueueItem>) =>
     setQueue((q) => q.map((it) => (it.key === key ? { ...it, ...patch } : it)));
 
-  async function processImageById(imageId: number): Promise<boolean> {
+  async function processImageById(imageId: number, force: boolean = false): Promise<boolean> {
     setBusy((b) => new Set(b).add(imageId));
     try {
-      const r = await api.processImage(imageId);
+      const r = await api.processImage(imageId, force);
       return r.status === "Completed" || r.status === "Review required";
     } catch (err) {
       setError(err);
@@ -179,26 +190,108 @@ function ProjectView({ id }: { id: number }) {
     }
   }
 
+  async function handleResetStuck() {
+    setResettingStuck(true);
+    try {
+      const res = await api.resetStuckImages(id);
+      toast("info", res.message || `Reset ${res.reset_count} stuck images.`);
+      load();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setResettingStuck(false);
+    }
+  }
+
   async function runBatch(imagesToProcess: ImageItem[]) {
     if (imagesToProcess.length === 0) return;
+    setError(null);
+    setJobProgress({
+      stage: "Initializing project processing...",
+      step: 0,
+      total: imagesToProcess.length,
+      completed: 0,
+      failed: 0,
+      inProgress: true,
+    });
     setBatch({ done: 0, total: imagesToProcess.length });
-    let ok = 0;
-    let completed = 0;
 
-    for (const item of imagesToProcess) {
-      const res = await processImageById(item.id);
-      if (res) ok++;
-      completed++;
-      setBatch({ done: completed, total: imagesToProcess.length });
+    try {
+      await api.processProject(id);
+    } catch (err) {
+      setError(err);
+      setJobProgress(null);
+      setBatch(null);
+      return;
     }
 
-    setBatch(null);
-    load();
-    if (ok === imagesToProcess.length) {
-      toast("success", `All ${imagesToProcess.length} view drawings generated.`);
-    } else {
-      toast("info", `Processed ${ok} of ${imagesToProcess.length} view drawings.`);
-    }
+    // Poll the backend job status every 1.5 seconds until done
+    const pollInterval = 1500;
+    const maxPolls = 120; // 3 minutes max
+    let polls = 0;
+
+    const poll = async () => {
+      try {
+        const st = await api.getProjectProcessStatus(id);
+        const doneCount = st.completed + st.failed;
+        setBatch({ done: doneCount, total: st.total });
+        setJobProgress({
+          stage: st.current_stage || (st.status === "completed" ? "All drawings completed" : "Processing views..."),
+          step: st.current_step || doneCount,
+          total: st.total,
+          view: st.current_view || undefined,
+          completed: st.completed,
+          failed: st.failed,
+          inProgress: st.status === "processing",
+        });
+
+        if (st.status === "completed") {
+          toast("success", `All ${st.completed} drawings generated successfully!`);
+          setBatch(null);
+          setJobProgress(null);
+          load();
+          return;
+        }
+
+        if (st.status === "partial_failure" || st.status === "failed") {
+          if (st.completed > 0) {
+            toast("info", `Completed ${st.completed} drawings. ${st.failed} failed.`);
+          } else {
+            toast("error", `Processing stopped: ${st.error || "One or more drawings failed."}`);
+          }
+          setBatch(null);
+          setJobProgress(null);
+          load();
+          return;
+        }
+
+        if (st.status === "idle") {
+          setBatch(null);
+          setJobProgress(null);
+          load();
+          return;
+        }
+
+        polls++;
+        if (polls < maxPolls) {
+          setTimeout(poll, pollInterval);
+        } else {
+          setBatch(null);
+          setJobProgress(null);
+          load();
+        }
+      } catch {
+        polls++;
+        if (polls < maxPolls) {
+          setTimeout(poll, pollInterval);
+        } else {
+          setBatch(null);
+          setJobProgress(null);
+        }
+      }
+    };
+
+    setTimeout(poll, 1000);
   }
 
   async function uploadBatchSession(files: File[]) {
@@ -437,7 +530,7 @@ function ProjectView({ id }: { id: number }) {
   ).length;
   const allApproved = approvedCount === 7 && uploadedCount === 7 && drawingCount === 7;
   const pendingProcessing = REQUIRED_VIEW_TYPES.map((v) => views[v]).filter(
-    (img): img is ImageItem => img !== null && !isActive(img.processing_status) && !busy.has(img.id) && img.processing_status !== "Completed"
+    (img): img is ImageItem => img !== null && !busy.has(img.id) && img.processing_status !== "Completed"
   );
 
   return (
@@ -657,6 +750,36 @@ function ProjectView({ id }: { id: number }) {
         )}
       </section>
 
+      {/* Real-time Project AI Processing Progress Banner */}
+      {jobProgress && (
+        <div className="rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+              <span className="text-sm font-semibold text-slate-800">
+                {jobProgress.stage}
+              </span>
+              {jobProgress.view && (
+                <span className="rounded-md bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-800">
+                  {jobProgress.view}
+                </span>
+              )}
+            </div>
+            <span className="text-xs font-medium text-slate-600">
+              {jobProgress.completed + jobProgress.failed}/{jobProgress.total} views ({Math.round(((jobProgress.completed + jobProgress.failed) / Math.max(1, jobProgress.total)) * 100)}%)
+            </span>
+          </div>
+          <div className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-blue-100">
+            <div
+              className="h-full bg-blue-600 transition-all duration-300"
+              style={{
+                width: `${Math.round(((jobProgress.completed + jobProgress.failed) / Math.max(1, jobProgress.total)) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Global Processing Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-center gap-3">
@@ -674,10 +797,22 @@ function ProjectView({ id }: { id: number }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          {/* Reset Stuck Jobs Button if any view is stuck or failed */}
+          {(Object.values(views).some((img) => img && (img.processing_status === "Processing" || img.processing_status === "Failed"))) && (
+            <button
+              onClick={handleResetStuck}
+              disabled={resettingStuck || batch !== null}
+              className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              title="Reset any images stuck in Processing or Failed back to Queued"
+            >
+              {resettingStuck ? "Resetting…" : "Reset Stuck Views"}
+            </button>
+          )}
+
           {batch ? (
             <div className="flex w-64 items-center gap-3 text-sm text-slate-600" role="status">
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
-                <div className="h-full bg-blue-600 transition-all" style={{ width: `${(batch.done / batch.total) * 100}%` }} />
+                <div className="h-full bg-blue-600 transition-all" style={{ width: `${(batch.done / Math.max(1, batch.total)) * 100}%` }} />
               </div>
               <span>{batch.done}/{batch.total} views</span>
             </div>
@@ -685,9 +820,12 @@ function ProjectView({ id }: { id: number }) {
             pendingProcessing.length > 0 && (
               <button
                 onClick={() => runBatch(pendingProcessing)}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                disabled={batch !== null}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
               >
-                Process {pendingProcessing.length} View{pendingProcessing.length === 1 ? "" : "s"}
+                {uploadedCount === 7 && pendingProcessing.length === 7
+                  ? "Process These 7 Images"
+                  : `Process ${pendingProcessing.length} View${pendingProcessing.length === 1 ? "" : "s"}`}
               </button>
             )
           )}

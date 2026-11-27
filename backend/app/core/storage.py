@@ -149,14 +149,30 @@ class SupabaseStorage:
     def exists(self, key: str) -> bool:
         clean = check_key(key)
         bucket = self._bucket()
-        try:
-            if hasattr(bucket, "exists"):
+        # 1. Try info() first if available (direct object check)
+        if hasattr(bucket, "info"):
+            try:
+                bucket.info(clean)
+                return True
+            except Exception as exc:
+                msg = str(exc).lower()
+                status = getattr(exc, "status", None)
+                if str(status) == "404" or "not found" in msg or "not_found" in msg or "404" in msg:
+                    return False
+        # 2. Try exists()
+        if hasattr(bucket, "exists"):
+            try:
                 return bool(bucket.exists(clean))
+            except Exception:
+                pass
+        # 3. Fallback: list the folder
+        try:
             parent = "/".join(clean.split("/")[:-1])
             name = clean.split("/")[-1]
             items = bucket.list(parent, {"search": name, "limit": 100})
-            return any(item.get("name") == name and item.get("id") is not None for item in (items or []))
-        except Exception:
+            return any(item.get("name") == name for item in (items or []))
+        except Exception as exc:
+            log.warning("SupabaseStorage.exists error for key %s: %s", key, exc)
             return False
 
     def delete(self, key: str) -> None:

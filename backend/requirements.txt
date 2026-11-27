@@ -1,19 +1,27 @@
+# Core API & ASGI
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
-sqlalchemy>=2.0,<3
-alembic>=1.13,<2
-psycopg[binary]>=3.2,<4
-opencv-python-headless>=4.9,<6
-numpy>=1.26
-pillow>=10.3
 python-multipart>=0.0.9
 pydantic-settings>=2.2,<3
 pyjwt>=2.8,<3
+
+# Database & Migrations
+sqlalchemy>=2.0,<3
+alembic>=1.13,<2
+psycopg[binary]>=3.2,<4
+
+# Image Processing & AI Pipeline
+# Note for macOS (Apple Silicon): Python 3.11 or 3.12 is recommended for pre-compiled wheels.
+opencv-python-headless>=4.9,<6
+numpy>=1.26
+pillow>=10.3
 reportlab>=4.0,<6
-vercel>=0.12,<1
 rembg[cpu]>=2.0
 onnxruntime>=1.18
+
+# Cloud Integrations
 supabase>=2.0,<3
+vercel>=0.12,<1
 
 # Optional: Segment Anything backend (PV_SEGMENTER=sam). Not needed for the default classical segmenter.
 # torch

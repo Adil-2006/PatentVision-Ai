@@ -226,6 +226,34 @@ class ProjectProcessAccepted(BaseModel):
     project_id: int
     queued: list[int]
     skipped: list[int]
+    status: str = "processing"
+    total: int = 0
+    message: str = "Processing started"
+
+
+class ViewProcessStatus(BaseModel):
+    id: int
+    view_type: str
+    status: str
+    error_message: str | None = None
+    failed_stage: str | None = None
+    drawing_url: str | None = None
+
+
+class ProjectProcessStatusOut(BaseModel):
+    project_id: int
+    status: str  # "idle" | "processing" | "completed" | "failed"
+    total: int
+    completed_count: int
+    failed_count: int
+    processing_count: int
+    queued_count: int
+    current_view: str | None = None
+    current_stage: str | None = None
+    percent: int = 0
+    is_complete: bool = False
+    views: list[ViewProcessStatus] = []
+    error_message: str | None = None
 
 
 class DashboardOut(BaseModel):

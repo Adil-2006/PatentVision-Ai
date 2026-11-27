@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PV_CORS_ORIGINS", "CORS_ORIGINS"),
     )
     cors_origin_regex: str | None = Field(
-        default=r"^https://patent-vision-ai(?:-[a-z0-9-]+)?\.vercel\.app$",
+        default=r"^https://.*\.vercel\.app$",
         validation_alias=AliasChoices("PV_CORS_ORIGIN_REGEX", "CORS_ORIGIN_REGEX"),
     )
 

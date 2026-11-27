@@ -5,6 +5,7 @@ import type {
   Meta,
   Project,
   ProjectDocument,
+  ProjectProcessStatus,
   ProjectViews,
   User,
   ViewType,
@@ -47,12 +48,25 @@ export async function toApiError(res: Response): Promise<ApiError> {
   } catch {
     /* fall through */
   }
-  return new ApiError(
-    `Request failed (${res.status}).`,
-    res.status,
-    "error",
-    res.status >= 500 ? "Ensure the PatentVision backend is running and check backend logs." : undefined,
-  );
+
+  let nextAction: string | undefined;
+  let message = `Request failed (${res.status}).`;
+
+  if (res.status === 404) {
+    message = "Resource or API route not found (404).";
+    nextAction = "Verify the requested URL path and ensure the backend route exists.";
+  } else if (res.status === 401 || res.status === 403) {
+    message = "Authentication or permission error.";
+    nextAction = "Please log in again or check your account permissions.";
+  } else if (res.status === 502 || res.status === 503 || res.status === 504) {
+    message = "PatentVision backend is temporarily unavailable (gateway / boot in progress).";
+    nextAction = "The Render server may be waking up from sleep. Please wait ~30-60 seconds and retry.";
+  } else if (res.status >= 500) {
+    message = "Internal server error occurred on the backend.";
+    nextAction = "Check the Render backend service logs for full exception traceback.";
+  }
+
+  return new ApiError(message, res.status, "error", nextAction);
 }
 
 async function send(path: string, init: RequestInit = {}): Promise<Response> {
@@ -62,17 +76,47 @@ async function send(path: string, init: RequestInit = {}): Promise<Response> {
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+
+  // 120s timeout controller for long requests (e.g. AI downloads or waking up Render free tier)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120_000);
+  const signal = init.signal ?? controller.signal;
+
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, { ...init, headers });
-  } catch {
+    res = await fetch(`${API_URL}${path}`, { ...init, headers, signal });
+  } catch (err: unknown) {
+    const isAbort = (err as { name?: string })?.name === "AbortError";
+    const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+
+    if (isOffline) {
+      throw new ApiError(
+        "You appear to be offline.",
+        0,
+        "offline",
+        "Please check your internet connection and try again.",
+      );
+    }
+
+    if (isAbort) {
+      throw new ApiError(
+        "Request timed out waiting for backend response.",
+        408,
+        "timeout",
+        "The operation took longer than 120 seconds. If the backend was sleeping on Render, it may now be awake. Please try again.",
+      );
+    }
+
     throw new ApiError(
-      "Cannot reach the PatentVision server.",
+      "Cannot reach the PatentVision backend server.",
       0,
       "network",
-      "Check that the backend is running (free hosts like Hugging Face Spaces may take ~30 s to wake from sleep).",
+      "Ensure the backend is deployed on Render (https://patentvision-ai-8.onrender.com). If it was inactive, free instances take ~40-60 s to wake from sleep.",
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
+
   if (!res.ok) throw await toApiError(res);
   return res;
 }
@@ -149,9 +193,14 @@ export const api = {
   listDocuments: (projectId: number) =>
     json<ProjectDocument[]>(`/projects/${projectId}/documents`),
 
-  processImage: (id: number) =>
-    json<{ image_id: number; status: ImageItem["processing_status"] }>(`/ai/process/${id}`, { method: "POST" }),
-  processProject: (id: number) => json<{ queued: number[]; skipped: number[] }>(`/ai/process/project/${id}`, { method: "POST" }),
+  processImage: (id: number, force: boolean = false) =>
+    json<{ image_id: number; status: ImageItem["processing_status"] }>(`/ai/process/${id}?force=${force}`, { method: "POST" }),
+  processProject: (id: number) =>
+    json<{ queued: number[]; skipped: number[]; status?: string; message?: string }>(`/ai/process/project/${id}`, { method: "POST" }),
+  getProjectProcessStatus: (projectId: number) =>
+    json<ProjectProcessStatus>(`/ai/process/project/${projectId}/status`),
+  resetStuckImages: (projectId: number) =>
+    json<{ project_id: number; reset_count: number; message: string }>(`/ai/reset-stuck/${projectId}`, { method: "POST" }),
   getDiagnostics: (imageId: number) =>
     json<{ image_id: number; stages: { stage: string; label: string; url: string }[] }>(`/images/${imageId}/diagnostics`),
 };

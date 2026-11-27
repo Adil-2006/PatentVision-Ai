@@ -135,6 +135,30 @@ export interface ProjectViews {
   view_order: string[];
 }
 
+export interface ViewProcessStatus {
+  image_id: number;
+  view_type: string;
+  status: ImageStatus;
+  failed_stage?: string | null;
+  error_message?: string | null;
+  drawing_url?: string | null;
+}
+
+export interface ProjectProcessStatus {
+  project_id: number;
+  status: "idle" | "processing" | "completed" | "partial_failure" | "failed";
+  total: number;
+  completed: number;
+  failed: number;
+  in_progress: number;
+  queued: number;
+  current_stage?: string | null;
+  current_view?: string | null;
+  current_step?: number | null;
+  error?: string | null;
+  views: ViewProcessStatus[];
+}
+
 export interface Dashboard {
   project_count: number;
   image_count: number;

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.ai.background import BackgroundRemover, get_background_remover
@@ -287,3 +287,181 @@ def _mark_failed(db: Session, image_id: int, stage: str, message: str) -> None:
         result.status, result.error_message, result.failed_stage = "Failed", message, stage
     db.commit()
     log.warning("image %s failed at %s: %s", image_id, stage, message)
+
+
+# Project-level background job tracking
+_project_jobs_lock = threading.Lock()
+_active_project_jobs: dict[int, dict] = {}
+
+
+def reset_stuck_project_images(db: Session, project_id: int) -> int:
+    """Force-reset any images in ACTIVE_STATUSES (Queued/Processing) to Failed so they can be retried immediately."""
+    images = db.scalars(
+        select(Image).where(Image.project_id == project_id, Image.processing_status.in_(ACTIVE_STATUSES))
+    ).all()
+    count = 0
+    for image in images:
+        _mark_failed(db, image.id, "user_reset", "Processing was reset. You can now retry generating this drawing.")
+        count += 1
+    with _project_jobs_lock:
+        _active_project_jobs.pop(project_id, None)
+    return count
+
+
+def get_project_processing_status(db: Session, project_id: int) -> dict:
+    """Inspect in-flight worker and database to return real-time processing progress."""
+    with _project_jobs_lock:
+        job_info = _active_project_jobs.get(project_id, {}).copy()
+
+    images = db.scalars(
+        select(Image).where(Image.project_id == project_id, Image.is_active == True).order_by(Image.id)
+    ).all()
+
+    total = len(images)
+    completed_count = sum(1 for i in images if i.processing_status in ("Completed", "Review required"))
+    failed_count = sum(1 for i in images if i.processing_status == "Failed")
+    processing_count = sum(1 for i in images if i.processing_status == "Processing")
+    queued_count = sum(1 for i in images if i.processing_status == "Queued")
+
+    # Determine overall status
+    is_worker_alive = bool(job_info and job_info.get("thread") and job_info["thread"].is_alive())
+    has_active = processing_count > 0 or queued_count > 0 or is_worker_alive
+
+    if has_active:
+        overall_status = "processing"
+    elif completed_count > 0 and (completed_count + failed_count) == total:
+        overall_status = "completed" if failed_count == 0 else "failed"
+    else:
+        overall_status = "idle"
+
+    current_view = job_info.get("current_view")
+    current_stage = job_info.get("current_stage")
+
+    if has_active and not current_stage:
+        active_img = next((i for i in images if i.processing_status == "Processing"), None)
+        if active_img:
+            current_view = active_img.view_type
+            current_stage = f"Processing {active_img.view_type} View..."
+        else:
+            queued_img = next((i for i in images if i.processing_status == "Queued"), None)
+            if queued_img:
+                current_view = queued_img.view_type
+                current_stage = f"Queued: {queued_img.view_type} View..."
+
+    percent = int((completed_count / max(1, total)) * 100) if total > 0 else 0
+
+    views_status = []
+    for img in images:
+        drawing_url = None
+        if img.result and img.result.patent_drawing_path:
+            drawing_url = f"/ai/results/{img.result.id}/download?kind=drawing"
+        views_status.append({
+            "id": img.id,
+            "view_type": img.view_type,
+            "status": img.processing_status,
+            "error_message": img.job.error_message if img.job else None,
+            "failed_stage": img.job.failed_stage if img.job else None,
+            "drawing_url": drawing_url,
+        })
+
+    return {
+        "project_id": project_id,
+        "status": overall_status,
+        "total": total,
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "processing_count": processing_count,
+        "queued_count": queued_count,
+        "current_view": current_view,
+        "current_stage": current_stage,
+        "percent": percent,
+        "is_complete": bool(total > 0 and completed_count == total),
+        "views": views_status,
+        "error_message": job_info.get("error_message"),
+    }
+
+
+def _run_project_processing_worker(
+    project_id: int,
+    image_ids: list[int],
+    detail_level: str | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
+) -> None:
+    total = len(image_ids)
+    log.info("Starting background processing for project %s (%s images)", project_id, total)
+    for idx, image_id in enumerate(image_ids, start=1):
+        with database.SessionLocal() as db:
+            img = db.get(Image, image_id)
+            view_name = img.view_type if img else f"Image {image_id}"
+
+        stage_msg = f"Processing image {idx}/{total}: {view_name} View..."
+        with _project_jobs_lock:
+            if project_id in _active_project_jobs:
+                _active_project_jobs[project_id]["current_index"] = idx
+                _active_project_jobs[project_id]["current_view"] = view_name
+                _active_project_jobs[project_id]["current_stage"] = stage_msg
+
+        log.info("[Project %s] %s", project_id, stage_msg)
+        try:
+            run_job(
+                image_id,
+                detail_level=detail_level,
+                texture_suppression=texture_suppression,
+                line_width=line_width,
+            )
+        except Exception:
+            log.exception("[Project %s] Error processing image %s", project_id, image_id)
+        finally:
+            import gc
+            gc.collect()
+
+    log.info("[Project %s] Background processing finished", project_id)
+    with _project_jobs_lock:
+        if project_id in _active_project_jobs:
+            _active_project_jobs[project_id]["current_stage"] = "Completed"
+            _active_project_jobs[project_id]["is_complete"] = True
+
+
+def start_project_processing_job(
+    project_id: int,
+    image_ids: list[int],
+    detail_level: str | None = None,
+    texture_suppression: bool | None = None,
+    line_width: float | None = None,
+    sync: bool = False,
+) -> dict:
+    """Launch processing for a list of image IDs. Runs in worker thread unless sync=True."""
+    if sync:
+        _run_project_processing_worker(
+            project_id,
+            image_ids,
+            detail_level=detail_level,
+            texture_suppression=texture_suppression,
+            line_width=line_width,
+        )
+        return {"status": "completed", "queued": image_ids}
+
+    worker = threading.Thread(
+        target=_run_project_processing_worker,
+        args=(project_id, image_ids),
+        kwargs={
+            "detail_level": detail_level,
+            "texture_suppression": texture_suppression,
+            "line_width": line_width,
+        },
+        daemon=True,
+    )
+    with _project_jobs_lock:
+        _active_project_jobs[project_id] = {
+            "thread": worker,
+            "image_ids": image_ids,
+            "total": len(image_ids),
+            "current_index": 0,
+            "current_view": None,
+            "current_stage": "Initializing pipeline...",
+            "is_complete": False,
+        }
+    worker.start()
+    return {"status": "processing", "queued": image_ids}
+

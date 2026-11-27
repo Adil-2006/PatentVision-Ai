@@ -38,7 +38,8 @@ describe("toApiError", () => {
   });
   it("falls back for non-JSON bodies", async () => {
     const err = await toApiError(new Response("oops", { status: 500 }));
-    expect(err.message).toBe("Request failed (500).");
+    expect(err.message).toBe("Internal server error occurred on the backend.");
+    expect(err.status).toBe(500);
   });
 });
 

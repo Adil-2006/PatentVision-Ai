@@ -58,13 +58,19 @@ vercel.json Vercel Services: full-stack deployment on a unified domain
 
 ### Backend (http://localhost:8000, docs at `/docs`)
 
+> **Note for macOS users**: Use Python 3.11 or 3.12 (e.g. `pyenv install 3.12.8` or `brew install python@3.12`) so prebuilt wheels are used for `onnxruntime` and `opencv-python-headless`.
+
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate          # Windows   (macOS/Linux: source .venv/bin/activate)
+# On Windows:
+.venv\Scripts\activate
+# On macOS / Linux:
+source .venv/bin/activate
+
 pip install -r requirements-dev.txt   # includes reportlab, pytest, ruff, opencv
-copy .env.example .env          # set PV_SECRET_KEY to a secure random string
-alembic upgrade head            # apply migrations including 0003_perspective_and_document_metadata
+cp .env.example .env                  # Windows: copy .env.example .env
+alembic upgrade head                  # apply database migrations
 uvicorn app.main:app --reload
 ```
 

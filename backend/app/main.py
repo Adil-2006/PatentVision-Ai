@@ -31,9 +31,12 @@ class PlatformMiddleware:
             if self.prefix and (path == self.prefix or path.startswith(self.prefix + "/")):
                 scope = {**scope, "root_path": self.prefix}
             if scope["type"] == "http":
-                from vercel.headers import headers_from_asgi_scope, set_headers
+                try:
+                    from vercel.headers import headers_from_asgi_scope, set_headers
 
-                set_headers(headers_from_asgi_scope(scope))
+                    set_headers(headers_from_asgi_scope(scope))
+                except ImportError:
+                    pass
         await self.app(scope, receive, send)
 
 
